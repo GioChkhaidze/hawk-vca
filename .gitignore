@@ -1,0 +1,16 @@
+﻿__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+output/
+*.log
+*.tmp
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.mkv
+*.avi
+.DS_Store
+Thumbs.db

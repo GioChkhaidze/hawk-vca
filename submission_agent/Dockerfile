@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 LABEL org.opencontainers.image.title="Hawk VCA" \
-      org.opencontainers.image.description="Layered video perception and style rendering for captions in four modes." \
+      org.opencontainers.image.description="Video captioning agent for AMD ACT II." \
       org.opencontainers.image.source="https://github.com/GioChkhaidze/hawk-vca" \
       org.opencontainers.image.version="v3" \
       org.opencontainers.image.licenses="MIT"

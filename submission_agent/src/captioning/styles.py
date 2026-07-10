@@ -110,7 +110,7 @@ def render_style_caption(
   return fallback_caption(style, summary)
 
 
-def diversity_repair_targets(captions: dict[str, str], threshold: float = 0.86) -> list[str]:
+def diversity_repair_targets(captions: dict[str, str], threshold: float = 0.72) -> list[str]:
   styles = list(captions)
   targets = []
   for index, left in enumerate(styles):
@@ -126,7 +126,19 @@ def diversity_repair_targets(captions: dict[str, str], threshold: float = 0.86) 
 def caption_similarity(left: str, right: str) -> float:
   normalized_left = " ".join(left.lower().split())
   normalized_right = " ".join(right.lower().split())
-  return SequenceMatcher(None, normalized_left, normalized_right).ratio()
+  left_tokens = normalized_left.split()
+  right_tokens = normalized_right.split()
+  shared_prefix = 0
+  for left_token, right_token in zip(left_tokens[:8], right_tokens[:8]):
+    if left_token != right_token:
+      break
+    shared_prefix += 1
+  prefix_denominator = max(1, min(8, len(left_tokens), len(right_tokens)))
+  return max(
+    SequenceMatcher(None, normalized_left, normalized_right).ratio(),
+    SequenceMatcher(None, left_tokens, right_tokens).ratio(),
+    shared_prefix / prefix_denominator,
+  )
 
 
 def fallback_captions(

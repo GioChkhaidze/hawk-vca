@@ -28,6 +28,7 @@ class TaskTrace:
   total_seconds: float
   perception_metadata: ProxyMetadata | None = None
   style_metadata: dict[str, ProxyMetadata] = field(default_factory=dict)
+  perception_calls: tuple[ProxyMetadata, ...] = ()
 
 
 TraceCallback = Callable[[int, TaskTrace], None]
@@ -78,11 +79,13 @@ def process_task(
   started = clock()
   metadata_lock = Lock()
   perception_metadata: ProxyMetadata | None = None
+  perception_calls: list[ProxyMetadata] = []
   style_metadata: dict[str, ProxyMetadata] = {}
 
   def record_perception_metadata(metadata: ProxyMetadata) -> None:
     nonlocal perception_metadata
     with metadata_lock:
+      perception_calls.append(metadata)
       perception_metadata = metadata
 
   def record_style_metadata(style: str, metadata: ProxyMetadata) -> None:
@@ -124,6 +127,7 @@ def process_task(
       total_seconds=clock() - started,
       perception_metadata=perception_metadata,
       style_metadata=dict(style_metadata),
+      perception_calls=tuple(perception_calls),
     ))
   return result
 

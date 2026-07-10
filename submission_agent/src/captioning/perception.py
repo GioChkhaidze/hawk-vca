@@ -6,9 +6,10 @@ from typing import Any, Callable
 from config import AppConfig
 from proxy_client import (
   CaptionProxyError, ProxyMetadata, perceive_storyboard_via_proxy, perceive_video_via_proxy,
-  proxy_configured,
+  proxy_configured, transcribe_audio_via_proxy,
 )
 from runtime_budget import RuntimeBudget
+from video.audio import AudioError, collect_speech_evidence
 from video.download import DownloadError, download_video, video_data_url
 from video.storyboard import StoryboardError, extract_storyboard
 
@@ -22,6 +23,8 @@ GENERIC_FACTS = {
 DOWNLOAD_TIMEOUT_SECONDS = 40
 MAX_VIDEO_BYTES = 160 * 1024 * 1024
 MAX_BASE64_VIDEO_BYTES = 48 * 1024 * 1024
+AUDIO_PROCESSING_TIMEOUT_SECONDS = 25
+OPTIONAL_AUDIO_RESERVE_SECONDS = 90
 
 
 def perceive_video(
@@ -94,6 +97,7 @@ def _request_storyboard(
 ) -> dict[str, Any]:
   try:
     duration, frames = storyboard_extractor(video_path, frames_dir, config.storyboard_max_frames)
+    speech_transcript = _collect_transcript(config, video_path, budget, urlopen, on_metadata)
     timeout = _bounded_timeout(budget, config.caption_proxy_timeout_seconds)
     if timeout is None:
       print("RUN_DEADLINE_REACHED stage=storyboard_perception", file=sys.stderr)
@@ -102,6 +106,10 @@ def _request_storyboard(
       "config": config,
       "duration_seconds": duration,
       "frames": [{"id": frame.frame_id, "data_url": frame.data_url} for frame in frames],
+      "speech_transcript": speech_transcript,
+      "video_data_url": (
+        video_data_url(video_path) if video_path.stat().st_size <= MAX_BASE64_VIDEO_BYTES else None
+      ),
       "timeout_seconds": timeout,
     }
     if urlopen is not None:
@@ -111,13 +119,71 @@ def _request_storyboard(
       on_metadata(result.metadata)
     print(
       f"PERCEPTION_PROXY_USED source=storyboard model={result.metadata.model} "
-      f"passes={len(result.metadata.perception_passes)} policy_version={result.metadata.policy_version}",
+      f"passes={len(result.metadata.perception_passes)} "
+      f"speech_used={str(result.metadata.speech_used).lower()} "
+      f"speech_context_used={str(result.metadata.speech_context_used).lower()} "
+      f"corroboration_used={str(result.metadata.corroboration_used).lower()} "
+      f"reconciliation_used={str(result.metadata.reconciliation_used).lower()} "
+      f"ensemble_mode={result.metadata.ensemble_mode} "
+      f"policy_version={result.metadata.policy_version}",
       file=sys.stderr,
     )
     return result.facts
   except (CaptionProxyError, StoryboardError, OSError, ValueError) as exc:
     print(f"STORYBOARD_PERCEPTION_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
     return fallback_facts()
+
+
+def _collect_transcript(
+  config: AppConfig, video_path: Path, budget: RuntimeBudget | None, urlopen: Any,
+  on_metadata: Callable[[ProxyMetadata], None] | None,
+) -> str | None:
+  processing_timeout = _bounded_timeout(
+    budget, AUDIO_PROCESSING_TIMEOUT_SECONDS, reserve_seconds=OPTIONAL_AUDIO_RESERVE_SECONDS,
+  )
+  if processing_timeout is None:
+    print("SPEECH_GATE activated=false reason=deadline", file=sys.stderr)
+    return None
+  try:
+    evidence = collect_speech_evidence(video_path, processing_timeout)
+  except (AudioError, OSError, ValueError) as exc:
+    print(f"SPEECH_GATE activated=false reason=media_error error={str(exc)[:240]!r}", file=sys.stderr)
+    return None
+  if evidence is None:
+    print("SPEECH_GATE activated=false reason=no_likely_speech", file=sys.stderr)
+    return None
+
+  timeout = _bounded_timeout(
+    budget, config.caption_proxy_timeout_seconds, reserve_seconds=OPTIONAL_AUDIO_RESERVE_SECONDS,
+  )
+  if timeout is None:
+    print("SPEECH_GATE activated=true transcribed=false reason=deadline", file=sys.stderr)
+    return None
+  try:
+    kwargs = {
+      "config": config,
+      "audio_data_url": evidence.audio_data_url,
+      "timeout_seconds": timeout,
+    }
+    if urlopen is not None:
+      kwargs["urlopen"] = urlopen
+    result = transcribe_audio_via_proxy(**kwargs)
+    if on_metadata:
+      on_metadata(result.metadata)
+    print(
+      f"SPEECH_GATE activated=true transcribed=true useful={str(bool(result.transcript)).lower()} "
+      f"audio_seconds={evidence.duration_seconds:.3f} speech_seconds={evidence.speech_seconds:.3f} "
+      f"speech_ratio={evidence.speech_ratio:.4f} near_mono_ratio={evidence.near_mono_ratio:.4f} "
+      f"envelope_cv={evidence.envelope_cv:.4f} "
+      f"model={result.metadata.model} "
+      f"duration_ms={result.metadata.attempts[-1].duration_ms} "
+      f"cost_usd={result.metadata.attempts[-1].cost_usd}",
+      file=sys.stderr,
+    )
+    return result.transcript
+  except (CaptionProxyError, OSError) as exc:
+    print(f"SPEECH_TRANSCRIPTION_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
+    return None
 
 
 def _downloaded_video_fallback(
@@ -174,8 +240,12 @@ def _request_facts(
     return fallback_facts()
 
 
-def _bounded_timeout(budget: RuntimeBudget | None, configured_seconds: float) -> float | None:
-  return configured_seconds if budget is None else budget.request_timeout(configured_seconds)
+def _bounded_timeout(
+  budget: RuntimeBudget | None, configured_seconds: float, reserve_seconds: float = 1.0,
+) -> float | None:
+  return configured_seconds if budget is None else budget.request_timeout(
+    configured_seconds, reserve_seconds=reserve_seconds,
+  )
 
 
 def fallback_facts() -> dict[str, Any]:

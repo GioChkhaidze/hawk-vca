@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from difflib import SequenceMatcher
 import sys
 from typing import Any, Callable
 
@@ -37,12 +38,37 @@ def render_style_captions(
       captions[style] = future.result()
       if on_caption:
         on_caption(style, captions[style])
-    return {style: captions[style] for style in requested_styles}
+    ordered = {style: captions[style] for style in requested_styles}
+
+  repair_targets = diversity_repair_targets(ordered)
+  for style in repair_targets:
+    if budget is not None and budget.exhausted():
+      break
+    avoided = [caption for other, caption in ordered.items() if other != style][:3]
+    candidate = render_style_caption(
+      facts, style, config, urlopen=urlopen, budget=budget, on_metadata=on_metadata,
+      avoid_captions=avoided,
+    )
+    previous_similarity = max(
+      caption_similarity(ordered[style], caption) for other, caption in ordered.items() if other != style
+    )
+    candidate_similarity = max(
+      caption_similarity(candidate, caption) for other, caption in ordered.items() if other != style
+    )
+    if not validate_caption(candidate, style) and candidate_similarity + 0.03 < previous_similarity:
+      ordered[style] = candidate
+      print(
+        f"STYLE_DIVERSITY_REPAIRED style={style} similarity={candidate_similarity:.3f}", file=sys.stderr,
+      )
+      if on_caption:
+        on_caption(style, candidate)
+  return ordered
 
 
 def render_style_caption(
   facts: dict[str, Any], style: str, config: AppConfig, urlopen: Any = None,
   budget: RuntimeBudget | None = None, on_metadata: Callable[[str, ProxyMetadata], None] | None = None,
+  avoid_captions: list[str] | None = None,
 ) -> str:
   summary = facts.get("factual_summary")
   timeout = config.caption_proxy_timeout_seconds
@@ -59,6 +85,7 @@ def render_style_caption(
       "style": style,
       "facts": facts,
       "timeout_seconds": timeout,
+      "avoid_captions": avoid_captions,
     }
     if urlopen is not None:
       kwargs["urlopen"] = urlopen
@@ -81,6 +108,25 @@ def render_style_caption(
 
   print(f"STYLE_FALLBACK style={style} reason=proxy_failed_or_invalid", file=sys.stderr)
   return fallback_caption(style, summary)
+
+
+def diversity_repair_targets(captions: dict[str, str], threshold: float = 0.86) -> list[str]:
+  styles = list(captions)
+  targets = []
+  for index, left in enumerate(styles):
+    for right in styles[index + 1:]:
+      if caption_similarity(captions[left], captions[right]) < threshold:
+        continue
+      target = left if right == "formal" else right
+      if target not in targets:
+        targets.append(target)
+  return targets
+
+
+def caption_similarity(left: str, right: str) -> float:
+  normalized_left = " ".join(left.lower().split())
+  normalized_right = " ".join(right.lower().split())
+  return SequenceMatcher(None, normalized_left, normalized_right).ratio()
 
 
 def fallback_captions(

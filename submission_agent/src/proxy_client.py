@@ -11,7 +11,10 @@ class CaptionProxyError(Exception):
   pass
 
 
-EXPECTED_POLICY_VERSION = "style-spec-v4-20260710"
+EXPECTED_POLICY_VERSION = "style-spec-v5-20260710"
+FACT_FIELDS = (
+  "factual_summary", "do_not_claim", "media_type", "events", "visible_text", "uncertain_details",
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,7 @@ class ProxyMetadata:
   fallback_used: bool
   attempts: tuple[ProxyAttempt, ...]
   source_kind: str | None = None
+  perception_passes: tuple[ProxyAttempt, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -63,30 +67,32 @@ def perceive_video_via_proxy(
   response = post_proxy(
     config, "/perceive", payload, timeout_seconds=timeout_seconds, urlopen=urlopen
   )
-  facts = response.get("facts")
-  if not isinstance(facts, dict):
-    raise CaptionProxyError("proxy response missing facts")
-
-  summary = facts.get("factual_summary")
-  do_not_claim = facts.get("do_not_claim")
-  if not isinstance(summary, str) or not summary.strip() or not isinstance(do_not_claim, list):
-    raise CaptionProxyError("proxy response contains invalid facts")
-  if not all(isinstance(item, str) and item.strip() for item in do_not_claim):
-    raise CaptionProxyError("proxy response contains invalid do_not_claim values")
-  normalized_facts = {
-    "factual_summary": summary.strip(),
-    "do_not_claim": [item.strip() for item in do_not_claim],
-  }
+  normalized_facts = _normalize_facts(response.get("facts"))
   expected_source = "url" if video_url else "base64"
   return PerceptionProxyResult(normalized_facts, _proxy_metadata(response, expected_source))
 
 
+def perceive_storyboard_via_proxy(
+  config: AppConfig, *, duration_seconds: float, frames: list[dict[str, str]],
+  timeout_seconds: float | None = None, urlopen: Any = urllib.request.urlopen,
+) -> PerceptionProxyResult:
+  response = post_proxy(
+    config, "/perceive-storyboard", {"duration_seconds": duration_seconds, "frames": frames},
+    timeout_seconds=timeout_seconds, urlopen=urlopen,
+  )
+  normalized_facts = _normalize_facts(response.get("facts"))
+  return PerceptionProxyResult(normalized_facts, _proxy_metadata(response, "storyboard"))
+
+
 def style_caption_via_proxy(
   config: AppConfig, *, style: str, facts: dict[str, Any], timeout_seconds: float | None = None,
-  urlopen: Any = urllib.request.urlopen,
+  avoid_captions: list[str] | None = None, urlopen: Any = urllib.request.urlopen,
 ) -> StyleProxyResult:
+  payload: dict[str, Any] = {"style": style, "facts": facts}
+  if avoid_captions:
+    payload["avoid_captions"] = avoid_captions
   response = post_proxy(
-    config, "/style", {"style": style, "facts": facts}, timeout_seconds=timeout_seconds, urlopen=urlopen
+    config, "/style", payload, timeout_seconds=timeout_seconds, urlopen=urlopen
   )
   caption = response.get("caption")
   if not isinstance(caption, str) or not caption.strip():
@@ -174,8 +180,18 @@ def _proxy_metadata(response: dict[str, Any], expected_source: str | None = None
   source_kind = response.get("source_kind")
   if expected_source is not None and source_kind != expected_source:
     raise CaptionProxyError("proxy response contains inconsistent source metadata")
-  if source_kind is not None and source_kind not in {"url", "base64"}:
+  if source_kind is not None and source_kind not in {"url", "base64", "storyboard"}:
     raise CaptionProxyError("proxy response contains invalid source metadata")
+
+  raw_passes = response.get("perception_passes", [])
+  if not isinstance(raw_passes, list):
+    raise CaptionProxyError("proxy response contains invalid perception pass metadata")
+  perception_passes = tuple(_proxy_attempt(item) for item in raw_passes)
+  if expected_source == "storyboard":
+    if not perception_passes or perception_passes[0].outcome != "used":
+      raise CaptionProxyError("proxy response missing storyboard pass metadata")
+    if len(perception_passes) > 2:
+      raise CaptionProxyError("proxy response contains too many storyboard passes")
 
   return ProxyMetadata(
     policy_version=policy_version,
@@ -183,7 +199,31 @@ def _proxy_metadata(response: dict[str, Any], expected_source: str | None = None
     fallback_used=fallback_used,
     attempts=attempts,
     source_kind=source_kind,
+    perception_passes=perception_passes,
   )
+
+
+def _normalize_facts(value: object) -> dict[str, Any]:
+  if not isinstance(value, dict):
+    raise CaptionProxyError("proxy response missing facts")
+  if any(key not in FACT_FIELDS for key in value):
+    raise CaptionProxyError("proxy response contains unknown fact fields")
+  summary = value.get("factual_summary")
+  exclusions = value.get("do_not_claim")
+  if not isinstance(summary, str) or not summary.strip() or not isinstance(exclusions, list):
+    raise CaptionProxyError("proxy response contains invalid facts")
+  if not all(isinstance(item, str) and item.strip() for item in exclusions):
+    raise CaptionProxyError("proxy response contains invalid do_not_claim values")
+  normalized: dict[str, Any] = {
+    "factual_summary": summary.strip(),
+    "do_not_claim": [item.strip() for item in exclusions],
+  }
+  structured_fields = FACT_FIELDS[2:]
+  present = [field for field in structured_fields if field in value]
+  if present and len(present) != len(structured_fields):
+    raise CaptionProxyError("proxy response contains incomplete structured facts")
+  normalized.update({field: value[field] for field in present})
+  return normalized
 
 
 def _proxy_attempt(value: object) -> ProxyAttempt:

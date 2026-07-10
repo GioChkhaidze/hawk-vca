@@ -4,9 +4,13 @@ from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 from config import AppConfig
-from proxy_client import CaptionProxyError, ProxyMetadata, perceive_video_via_proxy, proxy_configured
+from proxy_client import (
+  CaptionProxyError, ProxyMetadata, perceive_storyboard_via_proxy, perceive_video_via_proxy,
+  proxy_configured,
+)
 from runtime_budget import RuntimeBudget
 from video.download import DownloadError, download_video, video_data_url
+from video.storyboard import StoryboardError, extract_storyboard
 
 
 GENERIC_FACTS = {
@@ -15,13 +19,15 @@ GENERIC_FACTS = {
     "Specific subjects, actions, settings, identities, emotions, locations, and visible text are unverified."
   ],
 }
-DOWNLOAD_TIMEOUT_SECONDS = 30
-MAX_VIDEO_BYTES = 48 * 1024 * 1024
+DOWNLOAD_TIMEOUT_SECONDS = 40
+MAX_VIDEO_BYTES = 160 * 1024 * 1024
+MAX_BASE64_VIDEO_BYTES = 48 * 1024 * 1024
 
 
 def perceive_video(
   config: AppConfig, *, video_url: str | None, budget: RuntimeBudget | None = None, urlopen: Any = None,
-  downloader: Any = download_video, on_metadata: Callable[[ProxyMetadata], None] | None = None,
+  downloader: Any = download_video, storyboard_extractor: Any = extract_storyboard,
+  on_metadata: Callable[[ProxyMetadata], None] | None = None,
 ) -> dict[str, Any]:
   if not video_url:
     print("PERCEPTION_FALLBACK reason=missing_video_url", file=sys.stderr)
@@ -30,30 +36,109 @@ def perceive_video(
     print("PERCEPTION_FALLBACK reason=missing_proxy_config", file=sys.stderr)
     return fallback_facts()
 
+  if config.storyboard_perception_enabled:
+    return _perceive_storyboard_first(
+      config, video_url, budget, urlopen, downloader, storyboard_extractor, on_metadata,
+    )
+
   direct_facts = _request_facts(
     config, video_url=video_url, budget=budget, urlopen=urlopen, source="url", on_metadata=on_metadata,
   )
   if direct_facts != fallback_facts():
     return direct_facts
 
+  return _downloaded_video_fallback(
+    config, video_url, budget, urlopen, downloader, on_metadata, direct_facts,
+  )
+
+
+def _perceive_storyboard_first(
+  config: AppConfig, video_url: str, budget: RuntimeBudget | None, urlopen: Any, downloader: Any,
+  storyboard_extractor: Any, on_metadata: Callable[[ProxyMetadata], None] | None,
+) -> dict[str, Any]:
   download_timeout = _bounded_timeout(budget, DOWNLOAD_TIMEOUT_SECONDS)
   if download_timeout is None:
-    print("RUN_DEADLINE_REACHED stage=video_download", file=sys.stderr)
+    print("RUN_DEADLINE_REACHED stage=storyboard_download", file=sys.stderr)
     return fallback_facts()
-
   try:
-    with TemporaryDirectory(prefix="submission_agent_video_") as temp_dir:
-      path = downloader(video_url, Path(temp_dir), download_timeout, MAX_VIDEO_BYTES)
-      encoded_video = video_data_url(path)
-      facts = _request_facts(
-        config, video_data=encoded_video, budget=budget, urlopen=urlopen, source="base64", on_metadata=on_metadata,
+    with TemporaryDirectory(prefix="submission_agent_storyboard_") as temp_dir:
+      root = Path(temp_dir)
+      path = downloader(video_url, root, download_timeout, MAX_VIDEO_BYTES)
+      facts = _request_storyboard(
+        config, path, root / "frames", budget, urlopen, storyboard_extractor, on_metadata,
       )
       if facts != fallback_facts():
         return facts
+
+      direct_facts = _request_facts(
+        config, video_url=video_url, budget=budget, urlopen=urlopen, source="url",
+        on_metadata=on_metadata,
+      )
+      if direct_facts != fallback_facts() or path.stat().st_size > MAX_BASE64_VIDEO_BYTES:
+        return direct_facts
+      return _request_facts(
+        config, video_data=video_data_url(path), budget=budget, urlopen=urlopen, source="base64",
+        on_metadata=on_metadata,
+      )
+  except (DownloadError, OSError, ValueError) as exc:
+    print(f"STORYBOARD_DOWNLOAD_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
+    return _request_facts(
+      config, video_url=video_url, budget=budget, urlopen=urlopen, source="url",
+      on_metadata=on_metadata,
+    )
+
+
+def _request_storyboard(
+  config: AppConfig, video_path: Path, frames_dir: Path, budget: RuntimeBudget | None, urlopen: Any,
+  storyboard_extractor: Any, on_metadata: Callable[[ProxyMetadata], None] | None,
+) -> dict[str, Any]:
+  try:
+    duration, frames = storyboard_extractor(video_path, frames_dir, config.storyboard_max_frames)
+    timeout = _bounded_timeout(budget, config.caption_proxy_timeout_seconds)
+    if timeout is None:
+      print("RUN_DEADLINE_REACHED stage=storyboard_perception", file=sys.stderr)
+      return fallback_facts()
+    kwargs = {
+      "config": config,
+      "duration_seconds": duration,
+      "frames": [{"id": frame.frame_id, "data_url": frame.data_url} for frame in frames],
+      "timeout_seconds": timeout,
+    }
+    if urlopen is not None:
+      kwargs["urlopen"] = urlopen
+    result = perceive_storyboard_via_proxy(**kwargs)
+    if on_metadata:
+      on_metadata(result.metadata)
+    print(
+      f"PERCEPTION_PROXY_USED source=storyboard model={result.metadata.model} "
+      f"passes={len(result.metadata.perception_passes)} policy_version={result.metadata.policy_version}",
+      file=sys.stderr,
+    )
+    return result.facts
+  except (CaptionProxyError, StoryboardError, OSError, ValueError) as exc:
+    print(f"STORYBOARD_PERCEPTION_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
+    return fallback_facts()
+
+
+def _downloaded_video_fallback(
+  config: AppConfig, video_url: str, budget: RuntimeBudget | None, urlopen: Any, downloader: Any,
+  on_metadata: Callable[[ProxyMetadata], None] | None, direct_facts: dict[str, Any],
+) -> dict[str, Any]:
+  download_timeout = _bounded_timeout(budget, DOWNLOAD_TIMEOUT_SECONDS)
+  if download_timeout is None:
+    print("RUN_DEADLINE_REACHED stage=video_download", file=sys.stderr)
+    return direct_facts
+  try:
+    with TemporaryDirectory(prefix="submission_agent_video_") as temp_dir:
+      path = downloader(video_url, Path(temp_dir), download_timeout, MAX_BASE64_VIDEO_BYTES)
+      facts = _request_facts(
+        config, video_data=video_data_url(path), budget=budget, urlopen=urlopen, source="base64",
+        on_metadata=on_metadata,
+      )
+      return facts if facts != fallback_facts() else direct_facts
   except (DownloadError, OSError, ValueError) as exc:
     print(f"PERCEPTION_DOWNLOAD_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
-
-  return direct_facts
+    return direct_facts
 
 
 def _request_facts(

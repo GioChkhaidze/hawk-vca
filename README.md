@@ -49,7 +49,7 @@ Output: `/output/results.json`
 Create an `output` directory, then run:
 
 ```text
-docker run --rm --platform linux/amd64 -v "${PWD}/submission_agent/examples:/input:ro" -v "${PWD}/output:/output" ghcr.io/giochkhaidze/hawk-vca:v3
+docker run --rm --platform linux/amd64 -v "${PWD}/submission_agent/examples:/input:ro" -v "${PWD}/output:/output" ghcr.io/giochkhaidze/hawk-vca:v4
 ```
 
 ## Build

@@ -11,7 +11,7 @@ class CaptionProxyError(Exception):
   pass
 
 
-EXPECTED_POLICY_VERSION = "style-spec-v3-20260709"
+EXPECTED_POLICY_VERSION = "style-spec-v4-20260710"
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,11 @@ class ProxyAttempt:
   outcome: str
   error: str | None
   duration_ms: int
+  validation_error: str | None = None
+  finish_reason: str | None = None
+  prompt_tokens: int | None = None
+  completion_tokens: int | None = None
+  reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +192,11 @@ def _proxy_attempt(value: object) -> ProxyAttempt:
   model = value.get("model")
   outcome = value.get("outcome")
   error = value.get("error")
+  validation_error = value.get("validation_error")
+  finish_reason = value.get("finish_reason")
+  prompt_tokens = value.get("prompt_tokens")
+  completion_tokens = value.get("completion_tokens")
+  reasoning_tokens = value.get("reasoning_tokens")
   duration_ms = value.get("duration_ms")
   if not isinstance(model, str) or not model.strip() or outcome not in {"used", "failed"}:
     raise CaptionProxyError("proxy response contains invalid attempt metadata")
@@ -196,9 +206,30 @@ def _proxy_attempt(value: object) -> ProxyAttempt:
     raise CaptionProxyError("proxy response contains inconsistent attempt metadata")
   if outcome == "failed" and error is None:
     raise CaptionProxyError("proxy response contains inconsistent attempt metadata")
+  if validation_error is not None and (
+    not isinstance(validation_error, str) or not validation_error
+    or not validation_error.replace("_", "").isalnum()
+  ):
+    raise CaptionProxyError("proxy response contains invalid validation metadata")
+  if validation_error is not None and error != "upstream_invalid_caption":
+    raise CaptionProxyError("proxy response contains inconsistent validation metadata")
+  if finish_reason is not None and (not isinstance(finish_reason, str) or not finish_reason.strip()):
+    raise CaptionProxyError("proxy response contains invalid finish metadata")
+  for token_count in (prompt_tokens, completion_tokens, reasoning_tokens):
+    if token_count is not None and (
+      isinstance(token_count, bool) or not isinstance(token_count, int) or token_count < 0
+    ):
+      raise CaptionProxyError("proxy response contains invalid token metadata")
   if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms < 0:
     raise CaptionProxyError("proxy response contains invalid attempt duration metadata")
-  return ProxyAttempt(model.strip(), outcome, error, duration_ms)
+  return ProxyAttempt(
+    model.strip(), outcome, error, duration_ms,
+    validation_error=validation_error,
+    finish_reason=finish_reason.strip() if finish_reason else None,
+    prompt_tokens=prompt_tokens,
+    completion_tokens=completion_tokens,
+    reasoning_tokens=reasoning_tokens,
+  )
 
 
 def _safe_excerpt(body: bytes, access_id: str | None) -> str:

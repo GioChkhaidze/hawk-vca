@@ -2,23 +2,25 @@
 
 Video captioning agent for AMD ACT II Track 2.
 
-Hawk VCA downloads each complete clip once, builds a scene-aware storyboard, conditionally extracts speech evidence,
-and sends bounded perception and style intents to a private model proxy. The container contains no provider API keys.
+Hawk VCA downloads each complete clip once, builds a timestamped scene-aware storyboard, conditionally extracts
+speech evidence, and sends bounded perception and style intents to a private model proxy. The container contains no
+provider API keys.
 
-## Pipeline
+## V9.3.1 pipeline
 
 ```text
-video download
-  +-- scene-aware storyboard -> Gemma visual draft/audit
-  +-- local speech gate -> conditional transcript context
-  +-- native-video Gemini narrative
-                         -> GLM semantic reconciliation
-                         -> four parallel adaptive GLM captions
+complete video download
+  +-- timestamped storyboard -> Qwen3-VL factual report
+  +-- native video ----------> Gemini 3.1 Flash-Lite factual report
+  +-- local speech gate -----> conditional transcript evidence
+                              -> GLM semantic reconciliation
+                              -> four parallel GLM style captions
 ```
 
-V8.1 preserves supported chronology while scaling factual and caption detail to trusted video duration. It bounds
-native-video latency and provider retries, preserves the best safe draft on soft style failures, and retains complete
-conservative fallbacks if a provider or deadline fails.
+V9.3.1 preserves the dominant visible event while allowing scene-grounded formal, sarcastic, humorous technical, and
+humorous non-technical narration. Soft style validation can trigger one repair, but a structurally safe provider draft
+is retained so a stylistic false positive cannot degrade into a generic local caption. Promotional and montage
+material is summarized without treating genuine extra footage as hallucinated.
 
 ## Contract
 
@@ -57,7 +59,7 @@ New-Item -ItemType Directory -Force -Path output
 docker run --rm --platform linux/amd64 `
   -v "${PWD}/submission_agent/examples:/input:ro" `
   -v "${PWD}/output:/output" `
-  ghcr.io/giochkhaidze/hawk-vca:v8.1
+  ghcr.io/giochkhaidze/hawk-vca:v9.3.1
 ```
 
 ## Build
@@ -66,7 +68,7 @@ docker run --rm --platform linux/amd64 `
 docker build --platform linux/amd64 `
   --build-arg CAPTION_PROXY_URL=https://your-proxy.example `
   --build-arg CAPTION_PROXY_ACCESS_ID=replace-with-your-access-id `
-  -t hawk-vca:v8.1 `
+  -t hawk-vca:v9.3.1 `
   submission_agent
 ```
 

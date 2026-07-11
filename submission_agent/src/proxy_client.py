@@ -11,12 +11,12 @@ class CaptionProxyError(Exception):
   pass
 
 
-EXPECTED_POLICY_VERSION = "style-spec-v8.1-20260711"
-EXPECTED_PIPELINE_VERSION = "v8.1-duration-adaptive-20260711"
+EXPECTED_POLICY_VERSION = "style-spec-v9.3.1-relaxed-voice-20260711"
+EXPECTED_PIPELINE_VERSION = "v9.3.1-qwen-gemini-direct-20260711"
 MAX_TRANSCRIPT_CHARS = 6_000
 FACT_FIELDS = (
-  "factual_summary", "do_not_claim", "duration_seconds", "media_type", "events", "visible_text",
-  "uncertain_details",
+  "factual_summary", "do_not_claim", "duration_seconds", "scene_complexity", "media_type", "events",
+  "visible_text", "uncertain_details",
 )
 
 
@@ -34,6 +34,7 @@ class ProxyAttempt:
   audio_seconds: float | None = None
   cost_usd: float | None = None
   stage: str | None = None
+  response_excerpt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class ProxyMetadata:
   speech_context_used: bool = False
   corroboration_used: bool = False
   reconciliation_used: bool = False
+  native_video_included: bool = False
   ensemble_mode: str = "always"
   pipeline_version: str = EXPECTED_PIPELINE_VERSION
 
@@ -134,7 +136,8 @@ def transcribe_audio_via_proxy(
 
 def style_caption_via_proxy(
   config: AppConfig, *, style: str, facts: dict[str, Any], timeout_seconds: float | None = None,
-  avoid_captions: list[str] | None = None, urlopen: Any = urllib.request.urlopen,
+  avoid_captions: list[str] | None = None,
+  urlopen: Any = urllib.request.urlopen,
 ) -> StyleProxyResult:
   payload: dict[str, Any] = {"style": style, "facts": facts}
   if avoid_captions:
@@ -251,18 +254,22 @@ def _proxy_metadata(response: dict[str, Any], expected_source: str | None = None
   speech_context_used = response.get("speech_context_used", False)
   corroboration_used = response.get("corroboration_used", False)
   reconciliation_used = response.get("reconciliation_used", False)
+  native_video_included = response.get("native_video_included", False)
   ensemble_mode = response.get("ensemble_mode", "disabled")
   if expected_source == "storyboard" and any(
-    field not in response for field in ("speech_used", "speech_context_used", "corroboration_used")
+    field not in response for field in (
+      "speech_used", "speech_context_used", "corroboration_used", "native_video_included",
+    )
   ):
     raise CaptionProxyError("proxy response missing evidence metadata")
   if (not isinstance(speech_used, bool) or not isinstance(speech_context_used, bool)
-      or not isinstance(corroboration_used, bool) or not isinstance(reconciliation_used, bool)):
+      or not isinstance(corroboration_used, bool) or not isinstance(reconciliation_used, bool)
+      or not isinstance(native_video_included, bool)):
     raise CaptionProxyError("proxy response contains invalid evidence metadata")
   if ensemble_mode not in {"disabled", "conditional", "always"}:
     raise CaptionProxyError("proxy response contains invalid ensemble metadata")
   if expected_source != "storyboard" and (
-    speech_used or speech_context_used or corroboration_used or reconciliation_used
+    speech_used or speech_context_used or corroboration_used or reconciliation_used or native_video_included
   ):
     raise CaptionProxyError("proxy response contains inconsistent evidence metadata")
   if speech_context_used and not speech_used:
@@ -281,6 +288,7 @@ def _proxy_metadata(response: dict[str, Any], expected_source: str | None = None
     speech_context_used=speech_context_used,
     corroboration_used=corroboration_used,
     reconciliation_used=reconciliation_used,
+    native_video_included=native_video_included,
     ensemble_mode=ensemble_mode,
     pipeline_version=pipeline_version,
   )
@@ -307,7 +315,12 @@ def _normalize_facts(value: object) -> dict[str, Any]:
         or duration_seconds <= 0 or duration_seconds > 600):
       raise CaptionProxyError("proxy response contains invalid duration_seconds")
     normalized["duration_seconds"] = float(duration_seconds)
-  structured_fields = FACT_FIELDS[3:]
+  scene_complexity = value.get("scene_complexity")
+  if scene_complexity is not None:
+    if scene_complexity not in {"sustained", "developing", "montage"}:
+      raise CaptionProxyError("proxy response contains invalid scene_complexity")
+    normalized["scene_complexity"] = scene_complexity
+  structured_fields = FACT_FIELDS[4:]
   present = [field for field in structured_fields if field in value]
   if present and len(present) != len(structured_fields):
     raise CaptionProxyError("proxy response contains incomplete structured facts")
@@ -329,6 +342,7 @@ def _proxy_attempt(value: object) -> ProxyAttempt:
   audio_seconds = value.get("audio_seconds")
   cost_usd = value.get("cost_usd")
   stage = value.get("stage")
+  response_excerpt = value.get("response_excerpt")
   duration_ms = value.get("duration_ms")
   if not isinstance(model, str) or not model.strip() or outcome not in {"used", "failed"}:
     raise CaptionProxyError("proxy response contains invalid attempt metadata")
@@ -361,9 +375,14 @@ def _proxy_attempt(value: object) -> ProxyAttempt:
     ):
       raise CaptionProxyError("proxy response contains invalid cost metadata")
   if stage is not None and stage not in {
-    "draft", "audit", "speech_context", "native_video", "reconciliation",
+    "qwen_storyboard", "minimax_storyboard_fallback", "native_video", "reconciliation",
   }:
     raise CaptionProxyError("proxy response contains invalid attempt stage metadata")
+  if response_excerpt is not None and (
+    not isinstance(response_excerpt, str) or not response_excerpt.strip()
+    or len(response_excerpt) > 600
+  ):
+    raise CaptionProxyError("proxy response contains invalid attempt excerpt metadata")
   return ProxyAttempt(
     model.strip(), outcome, error, duration_ms,
     validation_error=validation_error,
@@ -374,6 +393,7 @@ def _proxy_attempt(value: object) -> ProxyAttempt:
     audio_seconds=float(audio_seconds) if audio_seconds is not None else None,
     cost_usd=float(cost_usd) if cost_usd is not None else None,
     stage=stage,
+    response_excerpt=response_excerpt.strip() if response_excerpt else None,
   )
 
 

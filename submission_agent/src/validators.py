@@ -40,6 +40,11 @@ REFUSAL_PATTERNS = (
   re.compile(r"\bunable to\b", re.IGNORECASE),
 )
 
+REASONING_LEAK_PATTERNS = (
+  re.compile(r"\b(?:let me (?:analyze|reason|plan)|plan my caption|trusted narrative|chronology from|analysis of (?:the )?evidence)\b", re.IGNORECASE),
+  re.compile(r"(?:^|\n)\s*\d+[.)]\s+"),
+)
+
 MARKDOWN_PATTERNS = (
   re.compile(r"^\s{0,3}#{1,6}\s+"),
   re.compile(r"^\s*[-*+]\s+"),
@@ -75,11 +80,10 @@ def validate_caption(caption: Any, style: str) -> list[str]:
     reasons.append("caption must not contain JSON fragments")
   if any(pattern.search(text) for pattern in REFUSAL_PATTERNS):
     reasons.append("caption must not contain refusal text")
+  if any(pattern.search(text) for pattern in REASONING_LEAK_PATTERNS):
+    reasons.append("caption must not expose reasoning or planning")
   if _has_style_prefix(text, style):
     reasons.append("caption must not start with a style label")
-  if style == "humorous_non_tech" and _contains_tech_term(text):
-    reasons.append("humorous_non_tech caption must not contain tech terms")
-
   return reasons
 
 

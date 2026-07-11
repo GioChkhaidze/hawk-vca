@@ -9,6 +9,7 @@ from proxy_client import (
   proxy_configured, transcribe_audio_via_proxy,
 )
 from runtime_budget import RuntimeBudget
+from video.analysis import AnalysisVideoError, prepare_analysis_video
 from video.audio import AudioError, collect_speech_evidence
 from video.download import DownloadError, download_video, video_data_url
 from video.storyboard import StoryboardError, extract_storyboard
@@ -23,13 +24,17 @@ GENERIC_FACTS = {
 DOWNLOAD_TIMEOUT_SECONDS = 40
 MAX_VIDEO_BYTES = 160 * 1024 * 1024
 MAX_BASE64_VIDEO_BYTES = 48 * 1024 * 1024
+# Leaves room for 24 storyboard images after base64 expansion inside the Worker's 72 MiB request cap.
+MAX_NATIVE_ANALYSIS_VIDEO_BYTES = 38 * 1024 * 1024
 AUDIO_PROCESSING_TIMEOUT_SECONDS = 25
 OPTIONAL_AUDIO_RESERVE_SECONDS = 90
+ANALYSIS_VIDEO_TIMEOUT_SECONDS = 35
 
 
 def perceive_video(
   config: AppConfig, *, video_url: str | None, budget: RuntimeBudget | None = None, urlopen: Any = None,
   downloader: Any = download_video, storyboard_extractor: Any = extract_storyboard,
+  native_video_preparer: Any = prepare_analysis_video,
   on_metadata: Callable[[ProxyMetadata], None] | None = None,
 ) -> dict[str, Any]:
   if not video_url:
@@ -41,7 +46,8 @@ def perceive_video(
 
   if config.storyboard_perception_enabled:
     return _perceive_storyboard_first(
-      config, video_url, budget, urlopen, downloader, storyboard_extractor, on_metadata,
+      config, video_url, budget, urlopen, downloader, storyboard_extractor, native_video_preparer,
+      on_metadata,
     )
 
   direct_facts = _request_facts(
@@ -57,7 +63,8 @@ def perceive_video(
 
 def _perceive_storyboard_first(
   config: AppConfig, video_url: str, budget: RuntimeBudget | None, urlopen: Any, downloader: Any,
-  storyboard_extractor: Any, on_metadata: Callable[[ProxyMetadata], None] | None,
+  storyboard_extractor: Any, native_video_preparer: Any,
+  on_metadata: Callable[[ProxyMetadata], None] | None,
 ) -> dict[str, Any]:
   download_timeout = _bounded_timeout(budget, DOWNLOAD_TIMEOUT_SECONDS)
   if download_timeout is None:
@@ -68,7 +75,8 @@ def _perceive_storyboard_first(
       root = Path(temp_dir)
       path = downloader(video_url, root, download_timeout, MAX_VIDEO_BYTES)
       facts = _request_storyboard(
-        config, path, root / "frames", budget, urlopen, storyboard_extractor, on_metadata,
+        config, path, root / "frames", budget, urlopen, storyboard_extractor,
+        native_video_preparer, on_metadata,
       )
       if facts != fallback_facts():
         return facts
@@ -78,26 +86,46 @@ def _perceive_storyboard_first(
         on_metadata=on_metadata,
       )
       if direct_facts != fallback_facts() or path.stat().st_size > MAX_BASE64_VIDEO_BYTES:
+        if direct_facts == fallback_facts():
+          _log_generic_selection("storyboard_and_direct_url_failed_base64_oversized", budget)
         return direct_facts
-      return _request_facts(
+      base64_facts = _request_facts(
         config, video_data=video_data_url(path), budget=budget, urlopen=urlopen, source="base64",
         on_metadata=on_metadata,
       )
+      if base64_facts == fallback_facts():
+        _log_generic_selection("storyboard_direct_url_and_base64_failed", budget)
+      return base64_facts
   except (DownloadError, OSError, ValueError) as exc:
     print(f"STORYBOARD_DOWNLOAD_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
-    return _request_facts(
+    direct_facts = _request_facts(
       config, video_url=video_url, budget=budget, urlopen=urlopen, source="url",
       on_metadata=on_metadata,
     )
+    if direct_facts == fallback_facts():
+      _log_generic_selection("storyboard_download_and_direct_url_failed", budget)
+    return direct_facts
+
+
+def _log_generic_selection(reason: str, budget: RuntimeBudget | None) -> None:
+  remaining = budget.remaining_seconds() if budget is not None else -1.0
+  print(
+    f"GENERIC_FACTS_SELECTED reason={reason} remaining_runtime_budget={remaining:.3f}",
+    file=sys.stderr,
+  )
 
 
 def _request_storyboard(
   config: AppConfig, video_path: Path, frames_dir: Path, budget: RuntimeBudget | None, urlopen: Any,
-  storyboard_extractor: Any, on_metadata: Callable[[ProxyMetadata], None] | None,
+  storyboard_extractor: Any, native_video_preparer: Any,
+  on_metadata: Callable[[ProxyMetadata], None] | None,
 ) -> dict[str, Any]:
   try:
     duration, frames = storyboard_extractor(video_path, frames_dir, config.storyboard_max_frames)
     speech_transcript = _collect_transcript(config, video_path, budget, urlopen, on_metadata)
+    native_video_path = _native_video_path(
+      video_path, frames_dir.parent / "native", budget, native_video_preparer,
+    )
     timeout = _bounded_timeout(budget, config.caption_proxy_timeout_seconds)
     if timeout is None:
       print("RUN_DEADLINE_REACHED stage=storyboard_perception", file=sys.stderr)
@@ -107,9 +135,7 @@ def _request_storyboard(
       "duration_seconds": duration,
       "frames": [{"id": frame.frame_id, "data_url": frame.data_url} for frame in frames],
       "speech_transcript": speech_transcript,
-      "video_data_url": (
-        video_data_url(video_path) if video_path.stat().st_size <= MAX_BASE64_VIDEO_BYTES else None
-      ),
+      "video_data_url": video_data_url(native_video_path) if native_video_path else None,
       "timeout_seconds": timeout,
     }
     if urlopen is not None:
@@ -124,6 +150,7 @@ def _request_storyboard(
       f"speech_context_used={str(result.metadata.speech_context_used).lower()} "
       f"corroboration_used={str(result.metadata.corroboration_used).lower()} "
       f"reconciliation_used={str(result.metadata.reconciliation_used).lower()} "
+      f"native_video_included={str(result.metadata.native_video_included).lower()} "
       f"ensemble_mode={result.metadata.ensemble_mode} "
       f"policy_version={result.metadata.policy_version}",
       file=sys.stderr,
@@ -132,6 +159,34 @@ def _request_storyboard(
   except (CaptionProxyError, StoryboardError, OSError, ValueError) as exc:
     print(f"STORYBOARD_PERCEPTION_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
     return fallback_facts()
+
+
+def _native_video_path(
+  video_path: Path, destination_dir: Path, budget: RuntimeBudget | None, native_video_preparer: Any,
+) -> Path | None:
+  source_size = video_path.stat().st_size
+  if source_size <= MAX_NATIVE_ANALYSIS_VIDEO_BYTES:
+    print(f"NATIVE_VIDEO_SOURCE kind=original bytes={source_size}", file=sys.stderr)
+    return video_path
+  timeout = _bounded_timeout(budget, ANALYSIS_VIDEO_TIMEOUT_SECONDS, reserve_seconds=1.0)
+  if timeout is None:
+    print("NATIVE_VIDEO_SOURCE kind=omitted reason=deadline", file=sys.stderr)
+    return None
+  try:
+    prepared = native_video_preparer(
+      video_path, destination_dir, timeout, MAX_NATIVE_ANALYSIS_VIDEO_BYTES,
+    )
+    prepared_size = prepared.stat().st_size
+    if prepared_size <= 0 or prepared_size > MAX_NATIVE_ANALYSIS_VIDEO_BYTES:
+      raise AnalysisVideoError("analysis-video preparer returned an invalid file")
+    print(
+      f"NATIVE_VIDEO_SOURCE kind=transcoded source_bytes={source_size} bytes={prepared_size}",
+      file=sys.stderr,
+    )
+    return prepared
+  except (AnalysisVideoError, OSError, ValueError) as exc:
+    print(f"NATIVE_VIDEO_SOURCE kind=omitted reason=transcode_failed error={str(exc)[:240]!r}", file=sys.stderr)
+    return None
 
 
 def _collect_transcript(

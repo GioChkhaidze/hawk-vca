@@ -52,8 +52,11 @@ def render_style_captions(
     ][:3]
     candidate = render_style_caption(
       facts, style, config, urlopen=urlopen, budget=budget, on_metadata=on_metadata,
-      avoid_captions=avoided,
+      avoid_captions=avoided, fallback_on_failure=False,
     )
+    if candidate is None:
+      print(f"STYLE_DIVERSITY_SKIPPED style={style} reason=repair_failed", file=sys.stderr)
+      continue
     previous_similarity = max(
       caption_similarity(ordered[style], caption) for other, caption in ordered.items() if other != style
     )
@@ -73,15 +76,15 @@ def render_style_captions(
 def render_style_caption(
   facts: dict[str, Any], style: str, config: AppConfig, urlopen: Any = None,
   budget: RuntimeBudget | None = None, on_metadata: Callable[[str, ProxyMetadata], None] | None = None,
-  avoid_captions: list[str] | None = None,
-) -> str:
+  avoid_captions: list[str] | None = None, fallback_on_failure: bool = True,
+) -> str | None:
   summary = facts.get("factual_summary")
   timeout = config.caption_proxy_timeout_seconds
   if budget is not None:
     bounded_timeout = budget.request_timeout(timeout)
     if bounded_timeout is None:
       print(f"RUN_DEADLINE_REACHED stage=style style={style}", file=sys.stderr)
-      return fallback_caption(style, summary)
+      return fallback_caption(style, summary) if fallback_on_failure else None
     timeout = bounded_timeout
 
   try:
@@ -111,6 +114,8 @@ def render_style_caption(
   except (CaptionProxyError, OSError) as exc:
     print(f"STYLE_PROXY_FAILED style={style} error={str(exc)[:240]!r}", file=sys.stderr)
 
+  if not fallback_on_failure:
+    return None
   print(f"STYLE_FALLBACK style={style} reason=proxy_failed_or_invalid", file=sys.stderr)
   return fallback_caption(style, summary)
 

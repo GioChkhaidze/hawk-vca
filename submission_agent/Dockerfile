@@ -3,7 +3,7 @@ FROM python:3.11-slim
 LABEL org.opencontainers.image.title="Hawk VCA" \
       org.opencontainers.image.description="Video captioning agent for AMD ACT II." \
       org.opencontainers.image.source="https://github.com/GioChkhaidze/hawk-vca" \
-      org.opencontainers.image.version="v8.1" \
+      org.opencontainers.image.version="v9.3.1" \
       org.opencontainers.image.licenses="MIT"
 
 ARG CAPTION_PROXY_URL=
@@ -16,7 +16,7 @@ ENV CAPTION_PROXY_URL=${CAPTION_PROXY_URL}
 ENV CAPTION_PROXY_ACCESS_ID=${CAPTION_PROXY_ACCESS_ID}
 ENV CAPTION_PROXY_TIMEOUT_SECONDS=${CAPTION_PROXY_TIMEOUT_SECONDS}
 ENV STORYBOARD_PERCEPTION_ENABLED=true
-ENV STORYBOARD_MAX_FRAMES=16
+ENV STORYBOARD_MAX_FRAMES=24
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \

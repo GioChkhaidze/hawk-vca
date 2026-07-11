@@ -1,4 +1,5 @@
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -11,13 +12,14 @@ class CaptionProxyError(Exception):
   pass
 
 
-EXPECTED_POLICY_VERSION = "style-spec-v9.3.1-relaxed-voice-20260711"
-EXPECTED_PIPELINE_VERSION = "v9.3.1-qwen-gemini-direct-20260711"
+EXPECTED_POLICY_VERSION = "style-spec-v9.5.3-natural-compact-20260711"
+EXPECTED_PIPELINE_VERSION = "v9.5.3-conservative-dual-vision-20260711"
 MAX_TRANSCRIPT_CHARS = 6_000
 FACT_FIELDS = (
-  "factual_summary", "do_not_claim", "duration_seconds", "scene_complexity", "media_type", "events",
+  "factual_summary", "caption_basis", "do_not_claim", "duration_seconds", "scene_complexity", "media_type", "events",
   "visible_text", "uncertain_details",
 )
+STRUCTURED_FACT_FIELDS = ("media_type", "events", "visible_text", "uncertain_details")
 
 
 @dataclass(frozen=True)
@@ -309,6 +311,15 @@ def _normalize_facts(value: object) -> dict[str, Any]:
     "factual_summary": summary.strip(),
     "do_not_claim": [item.strip() for item in exclusions],
   }
+  caption_basis = value.get("caption_basis")
+  if caption_basis is not None:
+    if not isinstance(caption_basis, str) or not caption_basis.strip():
+      raise CaptionProxyError("proxy response contains invalid caption_basis")
+    basis = caption_basis.strip()
+    basis_words = re.findall(r"\b[\w'-]+\b", basis)
+    if len(basis) > 500 or not 6 <= len(basis_words) <= 40:
+      raise CaptionProxyError("proxy response contains invalid caption_basis")
+    normalized["caption_basis"] = basis
   duration_seconds = value.get("duration_seconds")
   if duration_seconds is not None:
     if (isinstance(duration_seconds, bool) or not isinstance(duration_seconds, (int, float))
@@ -320,7 +331,7 @@ def _normalize_facts(value: object) -> dict[str, Any]:
     if scene_complexity not in {"sustained", "developing", "montage"}:
       raise CaptionProxyError("proxy response contains invalid scene_complexity")
     normalized["scene_complexity"] = scene_complexity
-  structured_fields = FACT_FIELDS[4:]
+  structured_fields = STRUCTURED_FACT_FIELDS
   present = [field for field in structured_fields if field in value]
   if present and len(present) != len(structured_fields):
     raise CaptionProxyError("proxy response contains incomplete structured facts")

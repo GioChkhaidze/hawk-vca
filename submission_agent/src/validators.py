@@ -3,7 +3,8 @@ from typing import Any
 
 
 MIN_CAPTION_WORDS = 6
-MAX_CAPTION_WORDS = 300
+MAX_CAPTION_WORDS = 40
+MAX_CAPTION_SENTENCES = 2
 
 TECH_TERMS = {
   "ai",
@@ -59,6 +60,11 @@ JSON_FRAGMENT_PATTERNS = (
   re.compile(r"[\"']\s*[A-Za-z_][A-Za-z0-9_ -]*\s*[\"']\s*:"),
 )
 
+INCOMPLETE_ENDING_PATTERN = re.compile(
+  r"\b(?:who|which|that|because|although|while|when|after|before|until|unless|and|or|but|with|without|to|for|from|into|onto|like|than|so|just|as if|as though)\s*[.!?][\"']?$",
+  re.IGNORECASE,
+)
+
 
 def validate_caption(caption: Any, style: str) -> list[str]:
   if not isinstance(caption, str):
@@ -74,6 +80,9 @@ def validate_caption(caption: Any, style: str) -> list[str]:
     reasons.append("caption is too short")
   if word_count > MAX_CAPTION_WORDS:
     reasons.append("caption is too long")
+  sentence_count = max(1, len(split_sentences(text)))
+  if sentence_count > MAX_CAPTION_SENTENCES:
+    reasons.append("caption has too many sentences")
   if "```" in text or "`" in text or _contains_markdown(text):
     reasons.append("caption must not contain markdown")
   if _contains_json_fragment(text):
@@ -82,6 +91,8 @@ def validate_caption(caption: Any, style: str) -> list[str]:
     reasons.append("caption must not contain refusal text")
   if any(pattern.search(text) for pattern in REASONING_LEAK_PATTERNS):
     reasons.append("caption must not expose reasoning or planning")
+  if not re.search(r"[.!?][\"']?$", text) or INCOMPLETE_ENDING_PATTERN.search(text):
+    reasons.append("caption must be a complete sentence")
   if _has_style_prefix(text, style):
     reasons.append("caption must not start with a style label")
   return reasons
@@ -89,6 +100,28 @@ def validate_caption(caption: Any, style: str) -> list[str]:
 
 def _contains_json_fragment(text: str) -> bool:
   return any(pattern.search(text) for pattern in JSON_FRAGMENT_PATTERNS)
+
+
+def split_sentences(value: object) -> list[str]:
+  text = str(value or "").strip()
+  if not text:
+    return []
+  marker = "\x00"
+  protected = re.sub(r"(\d)\.(\d)", rf"\1{marker}\2", text)
+  protected = re.sub(
+    r"\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Mt|vs|etc)\.",
+    lambda match: match.group(0).replace(".", marker),
+    protected,
+    flags=re.IGNORECASE,
+  )
+  protected = re.sub(
+    r"(?:\b[A-Z]\.\s*){2,}",
+    lambda match: match.group(0).replace(".", marker),
+    protected,
+  )
+  protected = re.sub(r"\b([A-Z])\.(?=\s+[A-Z][A-Za-z'-]+)", rf"\1{marker}", protected)
+  sentences = re.findall(r"[^.!?]+[.!?]+(?:[\"'](?=\s|$))?|[^.!?]+$", protected)
+  return [sentence.replace(marker, ".").strip() for sentence in sentences if sentence.strip()]
 
 
 def _contains_markdown(text: str) -> bool:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 
-MIN_STORYBOARD_FRAMES = 8
+MIN_STORYBOARD_FRAMES = 1
 MAX_STORYBOARD_FRAMES = 24
 MAX_FRAME_BYTES = 512 * 1024
 THUMBNAIL_BYTES = 16 * 16

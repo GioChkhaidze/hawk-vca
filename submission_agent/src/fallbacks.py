@@ -1,20 +1,23 @@
 import re
 
+from validators import split_sentences
+
 
 GENERIC_SUMMARY = "The specific subjects and actions are unclear."
 STYLE_SUFFIXES = {
-  "sarcastic": "apparently making this a moment of truly historic importance",
-  "humorous_tech": "as if the visible action were a process finally clearing the main queue",
-  "humorous_non_tech": "like an ordinary errand receiving a completely unnecessary amount of ceremony",
+  "sarcastic": "with the situation apparently taking itself very seriously",
+  "humorous_tech": "while the visible action completes its runtime",
+  "humorous_non_tech": "with all the confidence of a carefully planned outing",
 }
+MAX_CAPTION_WORDS = 40
 
 
 def fallback_caption(style: str, factual_summary: object = None) -> str:
-  max_summary_words = 46 if style == "formal" else 36
-  summary = clean_summary(factual_summary, max_words=max_summary_words)
   suffix = STYLE_SUFFIXES.get(style)
   if suffix is None:
-    return summary
+    return clean_summary(factual_summary, max_words=MAX_CAPTION_WORDS)
+  suffix_words = len(re.findall(r"\b[\w'-]+\b", suffix))
+  summary = clean_summary(factual_summary, max_words=MAX_CAPTION_WORDS - suffix_words)
   return f"{summary.rstrip('.!?')}, {suffix}."
 
 
@@ -23,8 +26,8 @@ def clean_summary(value: object, max_words: int = 42) -> str:
   if not text or text[:1] in "{[" or "`" in text or re.search(r"[\"']?factual_summary[\"']?\s*:", text):
     text = GENERIC_SUMMARY
 
-  sentence_match = re.match(r"^.+?[.!?](?=\s|$)", text)
-  sentence = sentence_match.group(0).strip() if sentence_match else text
+  sentences = split_sentences(text)
+  sentence = sentences[0] if sentences else text
   words = sentence.split()
   if len(words) < 6:
     padding = ["in", "the", "visible", "scene", "shown", "here."]

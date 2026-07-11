@@ -2,25 +2,29 @@
 
 Video captioning agent for AMD ACT II Track 2.
 
-Hawk VCA downloads each complete clip once, builds a timestamped scene-aware storyboard, conditionally extracts
+Hawk VCA downloads each complete clip once, builds a chronological scene-aware storyboard, conditionally extracts
 speech evidence, and sends bounded perception and style intents to a private model proxy. The container contains no
 provider API keys.
 
-## V9.3.1 pipeline
+## V9.5.3 pipeline
 
 ```text
 complete video download
-  +-- timestamped storyboard -> Qwen3-VL factual report
-  +-- native video ----------> Gemini 3.1 Flash-Lite factual report
-  +-- local speech gate -----> conditional transcript evidence
-                              -> GLM semantic reconciliation
-                              -> four parallel GLM style captions
+  +-- timestamped storyboard -> Qwen3-VL 30B Thinking factual report
+  +-- native video ----------> Gemini 3.5 Flash factual report
+  +-- local speech gate -----> optional transcript evidence
+                              -> GLM-5.2 semantic reconciliation
+                              -> shared compact caption basis
+                              -> four parallel GLM-5.2 style captions
 ```
 
-V9.3.1 preserves the dominant visible event while allowing scene-grounded formal, sarcastic, humorous technical, and
-humorous non-technical narration. Soft style validation can trigger one repair, but a structurally safe provider draft
-is retained so a stylistic false positive cannot degrade into a generic local caption. Promotional and montage
-material is summarized without treating genuine extra footage as hallucinated.
+V9.5.3 defaults to one complete sentence and uses a second only when a meaningful transition needs it. Captions are
+bounded to 40 words. All four styles preserve one reconciled semantic proposition while integrating formal, sarcastic,
+humorous technical, or humorous non-technical wording into the description itself.
+
+Low-motion clips retain their available storyboard evidence instead of unnecessarily abandoning the ensemble. Exact
+identity, score, event, location, object, and outcome claims are conservatively generalized when the visual reports
+do not support the same precision.
 
 ## Contract
 
@@ -59,7 +63,7 @@ New-Item -ItemType Directory -Force -Path output
 docker run --rm --platform linux/amd64 `
   -v "${PWD}/submission_agent/examples:/input:ro" `
   -v "${PWD}/output:/output" `
-  ghcr.io/giochkhaidze/hawk-vca:v9.3.1
+  ghcr.io/giochkhaidze/hawk-vca:v9.5.3
 ```
 
 ## Build
@@ -68,7 +72,7 @@ docker run --rm --platform linux/amd64 `
 docker build --platform linux/amd64 `
   --build-arg CAPTION_PROXY_URL=https://your-proxy.example `
   --build-arg CAPTION_PROXY_ACCESS_ID=replace-with-your-access-id `
-  -t hawk-vca:v9.3.1 `
+  -t hawk-vca:v9.5.3 `
   submission_agent
 ```
 

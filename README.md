@@ -3,22 +3,22 @@
 Video captioning agent for AMD ACT II Track 2.
 
 Hawk VCA downloads each complete clip once, builds a scene-aware storyboard, conditionally extracts speech evidence,
-and sends bounded perception and style intents to a private model proxy. The container never contains provider keys or
-model-provider credentials.
+and sends bounded perception and style intents to a private model proxy. The container contains no provider API keys.
 
 ## Pipeline
 
 ```text
 video download
   +-- scene-aware storyboard -> Gemma visual draft/audit
-  +-- local speech gate -> conditional Whisper transcript
-                         -> native-video Gemini verification
+  +-- local speech gate -> conditional transcript context
+  +-- native-video Gemini narrative
                          -> GLM semantic reconciliation
-                         -> four parallel GLM style captions
+                         -> four parallel adaptive GLM captions
 ```
 
-The runtime preserves task order, writes progress atomically, and retains complete conservative fallbacks if a provider
-or deadline fails.
+V8 preserves supported chronology and produces evidence-adaptive narratives instead of forcing every scene into a
+short template. The runtime preserves task order, writes progress atomically, and retains complete conservative
+fallbacks if a provider or deadline fails.
 
 ## Contract
 
@@ -57,7 +57,7 @@ New-Item -ItemType Directory -Force -Path output
 docker run --rm --platform linux/amd64 `
   -v "${PWD}/submission_agent/examples:/input:ro" `
   -v "${PWD}/output:/output" `
-  ghcr.io/giochkhaidze/hawk-vca:v6
+  ghcr.io/giochkhaidze/hawk-vca:v8
 ```
 
 ## Build
@@ -66,7 +66,7 @@ docker run --rm --platform linux/amd64 `
 docker build --platform linux/amd64 `
   --build-arg CAPTION_PROXY_URL=https://your-proxy.example `
   --build-arg CAPTION_PROXY_ACCESS_ID=replace-with-your-access-id `
-  -t hawk-vca:v6 `
+  -t hawk-vca:v8 `
   submission_agent
 ```
 

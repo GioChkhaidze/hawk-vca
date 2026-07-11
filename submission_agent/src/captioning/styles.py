@@ -11,6 +11,7 @@ from validators import validate_caption
 
 
 MAX_STYLE_WORKERS = 4
+MAX_AVOID_CAPTION_CHARS = 600
 
 
 def render_style_captions(
@@ -44,7 +45,11 @@ def render_style_captions(
   for style in repair_targets:
     if budget is not None and budget.exhausted():
       break
-    avoided = [caption for other, caption in ordered.items() if other != style][:3]
+    avoided = [
+      avoid_caption_excerpt(caption)
+      for other, caption in ordered.items()
+      if other != style
+    ][:3]
     candidate = render_style_caption(
       facts, style, config, urlopen=urlopen, budget=budget, on_metadata=on_metadata,
       avoid_captions=avoided,
@@ -121,6 +126,15 @@ def diversity_repair_targets(captions: dict[str, str], threshold: float = 0.72) 
       if target not in targets:
         targets.append(target)
   return targets
+
+
+def avoid_caption_excerpt(caption: str) -> str:
+  normalized = " ".join(caption.split())
+  if len(normalized) <= MAX_AVOID_CAPTION_CHARS:
+    return normalized
+  clipped = normalized[:MAX_AVOID_CAPTION_CHARS]
+  word_boundary = clipped.rsplit(" ", 1)[0].rstrip()
+  return word_boundary or clipped
 
 
 def caption_similarity(left: str, right: str) -> float:

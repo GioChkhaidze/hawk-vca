@@ -11,11 +11,12 @@ class CaptionProxyError(Exception):
   pass
 
 
-EXPECTED_POLICY_VERSION = "style-spec-v6-20260711"
-EXPECTED_PIPELINE_VERSION = "v6-native-ensemble-20260711"
+EXPECTED_POLICY_VERSION = "style-spec-v8-20260711"
+EXPECTED_PIPELINE_VERSION = "v8-adaptive-narrative-20260711"
 MAX_TRANSCRIPT_CHARS = 6_000
 FACT_FIELDS = (
-  "factual_summary", "do_not_claim", "media_type", "events", "visible_text", "uncertain_details",
+  "factual_summary", "do_not_claim", "duration_seconds", "media_type", "events", "visible_text",
+  "uncertain_details",
 )
 
 
@@ -300,7 +301,13 @@ def _normalize_facts(value: object) -> dict[str, Any]:
     "factual_summary": summary.strip(),
     "do_not_claim": [item.strip() for item in exclusions],
   }
-  structured_fields = FACT_FIELDS[2:]
+  duration_seconds = value.get("duration_seconds")
+  if duration_seconds is not None:
+    if (isinstance(duration_seconds, bool) or not isinstance(duration_seconds, (int, float))
+        or duration_seconds <= 0 or duration_seconds > 600):
+      raise CaptionProxyError("proxy response contains invalid duration_seconds")
+    normalized["duration_seconds"] = float(duration_seconds)
+  structured_fields = FACT_FIELDS[3:]
   present = [field for field in structured_fields if field in value]
   if present and len(present) != len(structured_fields):
     raise CaptionProxyError("proxy response contains incomplete structured facts")

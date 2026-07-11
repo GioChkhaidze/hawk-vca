@@ -128,7 +128,7 @@ def _request_storyboard(
       f"policy_version={result.metadata.policy_version}",
       file=sys.stderr,
     )
-    return result.facts
+    return {**result.facts, "duration_seconds": float(duration)}
   except (CaptionProxyError, StoryboardError, OSError, ValueError) as exc:
     print(f"STORYBOARD_PERCEPTION_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
     return fallback_facts()

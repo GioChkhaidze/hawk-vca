@@ -3,7 +3,7 @@ from typing import Any
 
 
 MIN_CAPTION_WORDS = 6
-MAX_CAPTION_WORDS = 90
+MAX_CAPTION_WORDS = 300
 
 TECH_TERMS = {
   "ai",

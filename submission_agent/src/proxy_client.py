@@ -11,8 +11,8 @@ class CaptionProxyError(Exception):
   pass
 
 
-EXPECTED_POLICY_VERSION = "style-spec-v8-20260711"
-EXPECTED_PIPELINE_VERSION = "v8-adaptive-narrative-20260711"
+EXPECTED_POLICY_VERSION = "style-spec-v8.1-20260711"
+EXPECTED_PIPELINE_VERSION = "v8.1-duration-adaptive-20260711"
 MAX_TRANSCRIPT_CHARS = 6_000
 FACT_FIELDS = (
   "factual_summary", "do_not_claim", "duration_seconds", "media_type", "events", "visible_text",

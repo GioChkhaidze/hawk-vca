@@ -3,7 +3,7 @@ FROM python:3.11-slim
 LABEL org.opencontainers.image.title="Hawk VCA" \
       org.opencontainers.image.description="Video captioning agent for AMD ACT II." \
       org.opencontainers.image.source="https://github.com/GioChkhaidze/hawk-vca" \
-      org.opencontainers.image.version="v8" \
+      org.opencontainers.image.version="v8.1" \
       org.opencontainers.image.licenses="MIT"
 
 ARG CAPTION_PROXY_URL=

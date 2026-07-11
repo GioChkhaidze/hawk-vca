@@ -16,9 +16,9 @@ video download
                          -> four parallel adaptive GLM captions
 ```
 
-V8 preserves supported chronology and produces evidence-adaptive narratives instead of forcing every scene into a
-short template. The runtime preserves task order, writes progress atomically, and retains complete conservative
-fallbacks if a provider or deadline fails.
+V8.1 preserves supported chronology while scaling factual and caption detail to trusted video duration. It bounds
+native-video latency and provider retries, preserves the best safe draft on soft style failures, and retains complete
+conservative fallbacks if a provider or deadline fails.
 
 ## Contract
 
@@ -57,7 +57,7 @@ New-Item -ItemType Directory -Force -Path output
 docker run --rm --platform linux/amd64 `
   -v "${PWD}/submission_agent/examples:/input:ro" `
   -v "${PWD}/output:/output" `
-  ghcr.io/giochkhaidze/hawk-vca:v8
+  ghcr.io/giochkhaidze/hawk-vca:v8.1
 ```
 
 ## Build
@@ -66,7 +66,7 @@ docker run --rm --platform linux/amd64 `
 docker build --platform linux/amd64 `
   --build-arg CAPTION_PROXY_URL=https://your-proxy.example `
   --build-arg CAPTION_PROXY_ACCESS_ID=replace-with-your-access-id `
-  -t hawk-vca:v8 `
+  -t hawk-vca:v8.1 `
   submission_agent
 ```
 

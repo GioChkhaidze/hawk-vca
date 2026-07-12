@@ -3,8 +3,8 @@ from typing import Any
 
 
 MIN_CAPTION_WORDS = 6
-MAX_CAPTION_WORDS = 40
-MAX_CAPTION_SENTENCES = 2
+MAX_CAPTION_WORDS = 300
+MAX_CAPTION_SENTENCES = 8
 
 STYLE_LABELS = {
   "formal",
@@ -141,21 +141,28 @@ def fallback_caption(style: str, factual_summary: object = None) -> str:
   return f"{summary.rstrip('.!?')}, {suffix}."
 
 
-def clean_summary(value: object, max_words: int = 42) -> str:
+def clean_summary(value: object, max_words: int = MAX_CAPTION_WORDS) -> str:
   text = " ".join(str(value or GENERIC_SUMMARY).split()).strip()
   if not text or text[:1] in "{[" or "`" in text or re.search(r"[\"']?factual_summary[\"']?\s*:", text):
     text = GENERIC_SUMMARY
 
-  sentences = split_sentences(text)
-  sentence = sentences[0] if sentences else text
-  words = sentence.split()
+  sentences = split_sentences(text) or [text]
+  selected: list[str] = []
+  word_count = 0
+  for sentence in sentences[:MAX_CAPTION_SENTENCES]:
+    sentence_words = sentence.split()
+    if word_count + len(sentence_words) > max_words:
+      if not selected:
+        selected.append(" ".join(sentence_words[:max_words]).rstrip(" ,;:-.!?") + ".")
+      break
+    selected.append(sentence)
+    word_count += len(sentence_words)
+  result = " ".join(selected).strip()
+  words = result.split()
   if len(words) < 6:
     padding = ["in", "the", "visible", "scene", "shown", "here."]
     words.extend(padding[:6 - len(words)])
-  truncated = len(words) > max_words
-  result = " ".join(words[:max_words]).strip()
-  if truncated:
-    result = result.rstrip(" ,;:-.!?") + "."
-  elif result[-1:] not in ".!?":
+    result = " ".join(words)
+  if result[-1:] not in ".!?":
     result += "."
   return result

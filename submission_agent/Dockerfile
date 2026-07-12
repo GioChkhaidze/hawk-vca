@@ -5,7 +5,7 @@ FROM python:3.11-alpine@sha256:25976e9d34a0fab1f278cae931f34c8303d97bf0c0d7f85b6
 LABEL org.opencontainers.image.title="Hawk VCA" \
       org.opencontainers.image.description="Video captioning agent for AMD ACT II." \
       org.opencontainers.image.source="https://github.com/GioChkhaidze/hawk-vca" \
-      org.opencontainers.image.version="v9.5.4" \
+      org.opencontainers.image.version="v9.6" \
       org.opencontainers.image.licenses="MIT"
 
 ARG CAPTION_PROXY_URL=

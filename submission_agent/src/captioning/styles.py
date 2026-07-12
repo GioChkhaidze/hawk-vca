@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 import sys
+import time
+from threading import BoundedSemaphore
 from typing import Any, Callable
 
 from config import AppConfig
@@ -10,13 +12,18 @@ from runtime_budget import RuntimeBudget
 
 
 MAX_STYLE_WORKERS = 4
+MAX_GLOBAL_STYLE_REQUESTS = 6
 MAX_AVOID_CAPTION_CHARS = 600
+TRANSIENT_STYLE_RETRIES = 1
+TRANSIENT_STYLE_BACKOFF_SECONDS = 0.35
+_STYLE_REQUEST_SLOTS = BoundedSemaphore(MAX_GLOBAL_STYLE_REQUESTS)
 
 
 def render_style_captions(
   facts: dict[str, Any], requested_styles: list[str], config: AppConfig, urlopen: Any = None,
   on_caption: Callable[[str, str], None] | None = None, budget: RuntimeBudget | None = None,
   on_metadata: Callable[[str, ProxyMetadata], None] | None = None,
+  sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, str]:
   if not proxy_configured(config):
     print("STYLE_FALLBACK reason=missing_proxy_config", file=sys.stderr)
@@ -27,7 +34,7 @@ def render_style_captions(
 
   def render(style: str) -> str:
     return render_style_caption(
-      facts, style, config, urlopen=urlopen, budget=budget, on_metadata=on_metadata,
+      facts, style, config, urlopen=urlopen, budget=budget, on_metadata=on_metadata, sleep=sleep,
     )
 
   with ThreadPoolExecutor(max_workers=min(MAX_STYLE_WORKERS, max(1, len(requested_styles)))) as pool:
@@ -51,7 +58,7 @@ def render_style_captions(
     ][:3]
     candidate = render_style_caption(
       facts, style, config, urlopen=urlopen, budget=budget, on_metadata=on_metadata,
-      avoid_captions=avoided, fallback_on_failure=False,
+      avoid_captions=avoided, fallback_on_failure=False, sleep=sleep,
     )
     if candidate is None:
       print(f"STYLE_DIVERSITY_SKIPPED style={style} reason=repair_failed", file=sys.stderr)
@@ -76,47 +83,71 @@ def render_style_caption(
   facts: dict[str, Any], style: str, config: AppConfig, urlopen: Any = None,
   budget: RuntimeBudget | None = None, on_metadata: Callable[[str, ProxyMetadata], None] | None = None,
   avoid_captions: list[str] | None = None, fallback_on_failure: bool = True,
+  sleep: Callable[[float], None] = time.sleep,
 ) -> str | None:
   summary = facts.get("factual_summary")
-  timeout = config.caption_proxy_timeout_seconds
-  if budget is not None:
-    bounded_timeout = budget.request_timeout(timeout)
-    if bounded_timeout is None:
-      print(f"RUN_DEADLINE_REACHED stage=style style={style}", file=sys.stderr)
-      return fallback_caption(style, summary) if fallback_on_failure else None
-    timeout = bounded_timeout
+  for request_index in range(TRANSIENT_STYLE_RETRIES + 1):
+    timeout = config.caption_proxy_timeout_seconds
+    if budget is not None:
+      bounded_timeout = budget.request_timeout(timeout)
+      if bounded_timeout is None:
+        print(f"RUN_DEADLINE_REACHED stage=style style={style}", file=sys.stderr)
+        return fallback_caption(style, summary) if fallback_on_failure else None
+      timeout = bounded_timeout
 
-  try:
-    kwargs = {
-      "config": config,
-      "style": style,
-      "facts": facts,
-      "timeout_seconds": timeout,
-      "avoid_captions": avoid_captions,
-    }
-    if urlopen is not None:
-      kwargs["urlopen"] = urlopen
-    result = style_caption_via_proxy(**kwargs)
-    if on_metadata:
-      on_metadata(style, result.metadata)
-    caption = result.caption
-    reasons = validate_caption(caption, style)
-    if not reasons:
-      print(
-        f"STYLE_PROXY_USED style={style} model={result.metadata.model} "
-        f"fallback_used={str(result.metadata.fallback_used).lower()} "
-        f"policy_version={result.metadata.policy_version}",
-        file=sys.stderr,
-      )
-      return caption
-    print(f"STYLE_PROXY_INVALID style={style} reasons={reasons} excerpt={caption[:160]!r}", file=sys.stderr)
-  except (CaptionProxyError, OSError) as exc:
-    print(f"STYLE_PROXY_FAILED style={style} error={str(exc)[:240]!r}", file=sys.stderr)
+    try:
+      kwargs = {
+        "config": config,
+        "style": style,
+        "facts": facts,
+        "timeout_seconds": timeout,
+        "avoid_captions": avoid_captions,
+      }
+      if urlopen is not None:
+        kwargs["urlopen"] = urlopen
+      with _STYLE_REQUEST_SLOTS:
+        result = style_caption_via_proxy(**kwargs)
+      if on_metadata:
+        on_metadata(style, result.metadata)
+      caption = result.caption
+      reasons = validate_caption(caption, style)
+      if not reasons:
+        print(
+          f"STYLE_PROXY_USED style={style} model={result.metadata.model} "
+          f"fallback_used={str(result.metadata.fallback_used).lower()} "
+          f"policy_version={result.metadata.policy_version}",
+          file=sys.stderr,
+        )
+        return caption
+      print(f"STYLE_PROXY_INVALID style={style} reasons={reasons} excerpt={caption[:160]!r}", file=sys.stderr)
+      break
+    except (CaptionProxyError, OSError) as exc:
+      message = str(exc)
+      if request_index < TRANSIENT_STYLE_RETRIES and transient_style_failure(message):
+        delay = TRANSIENT_STYLE_BACKOFF_SECONDS * (request_index + 1)
+        print(
+          f"STYLE_PROXY_RETRY style={style} attempt={request_index + 2} "
+          f"delay_seconds={delay:.2f} error={message[:800]!r}",
+          file=sys.stderr,
+        )
+        sleep(delay)
+        continue
+      print(f"STYLE_PROXY_FAILED style={style} error={message[:1200]!r}", file=sys.stderr)
+      break
 
   if not fallback_on_failure:
     return None
   print(f"STYLE_FALLBACK style={style} reason=proxy_failed_or_invalid", file=sys.stderr)
   return fallback_caption(style, summary)
+
+
+def transient_style_failure(message: str) -> bool:
+  normalized = str(message).lower()
+  return any(marker in normalized for marker in (
+    "http 429", "http 500", "http 502", "http 503", "http 504",
+    "upstream_network_error", "temporary failure", "connection reset",
+    "remote end closed connection", "timed out",
+  ))
 
 
 def diversity_repair_targets(captions: dict[str, str], threshold: float = 0.72) -> list[str]:

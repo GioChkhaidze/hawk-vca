@@ -2,34 +2,34 @@
 
 Video captioning agent for AMD ACT II Track 2.
 
-Hawk VCA downloads each complete clip once, builds a chronological scene-aware storyboard, conditionally extracts
-speech evidence, and sends bounded perception and style intents to a private model proxy. The container contains no
+Hawk VCA downloads each complete clip once, builds an adaptive chronological storyboard, conditionally extracts speech
+evidence, and sends bounded perception and style intents to a private model proxy. The public container contains no
 provider API keys.
 
-## V9.5.4 pipeline
+## V9.6 pipeline
 
 ```text
-complete video download
-  +-- timestamped storyboard -> Qwen3-VL 30B Thinking factual report
-  +-- native video ----------> Gemini 3.5 Flash factual report
-  +-- local speech gate -----> optional transcript evidence
-                              -> GLM-5.2 semantic reconciliation
-                              -> shared compact caption basis
-                              -> four parallel GLM-5.2 style captions
+complete video
+  +-- ordered storyboard -> Qwen3-VL factual report
+  +-- native video ------> Gemini 3.5 Flash factual report
+  +-- speech gate -------> optional Whisper transcript
+                          -> GLM-5.2 reconciliation
+                          -> complete factual narrative and exclusions
+                          -> four parallel evidence-led style captions
 ```
 
-V9.5.4 retains the V9.5.3 caption policy: one complete sentence by default and a second only when a meaningful
-transition needs it. Captions are
-bounded to 40 words. All four styles preserve one reconciled semantic proposition while integrating formal, sarcastic,
-humorous technical, or humorous non-technical wording into the description itself.
+V9.6 renders directly from the complete reconciled factual narrative. There is no intermediate compressed caption
+basis and no fixed word or sentence target. Sustained actions remain concise, while genuinely changing sequences may
+retain their meaningful beginning, progression, and visible ending. The 300-word and eight-sentence limits are runaway
+safety ceilings rather than targets.
 
-The V9.5.4 runtime refactor adds adaptive storyboard preprocessing, earlier deadline-aware degradation, progressive
-atomic result journaling, and one centralized caption-validity boundary. These changes reduce avoidable preprocessing
-and finalization work without changing the requested caption semantics or public input/output contract.
+Formal captions use concrete chronological description. Sarcastic and humorous captions transform the visible action
+through one coherent, scene-specific premise instead of appending a detachable joke. GLM-5.2 is the primary renderer;
+Qwen 3.7 Plus and MiniMax M3 provide bounded provider recovery.
 
-Low-motion clips retain their available storyboard evidence instead of unnecessarily abandoning the ensemble. Exact
-identity, score, event, location, object, and outcome claims are conservatively generalized when the visual reports
-do not support the same precision.
+The runtime globally bounds style-request concurrency, retries transient proxy failures once, preserves the strongest
+safe provider response, journals results atomically, and retains an emergency schema-safe caption only after all remote
+recovery paths are exhausted.
 
 ## Contract
 
@@ -68,7 +68,7 @@ New-Item -ItemType Directory -Force -Path output
 docker run --rm --platform linux/amd64 `
   -v "${PWD}/submission_agent/examples:/input:ro" `
   -v "${PWD}/output:/output" `
-  ghcr.io/giochkhaidze/hawk-vca:v9.5.4
+  ghcr.io/giochkhaidze/hawk-vca:v9.6
 ```
 
 ## Build
@@ -77,12 +77,12 @@ docker run --rm --platform linux/amd64 `
 docker build --platform linux/amd64 `
   --build-arg CAPTION_PROXY_URL=https://your-proxy.example `
   --build-arg CAPTION_PROXY_ACCESS_ID=replace-with-your-access-id `
-  -t hawk-vca:v9.5.4 `
+  -t hawk-vca:v9.6 `
   submission_agent
 ```
 
-`CAPTION_PROXY_ACCESS_ID` is an observable proxy access identifier, not a provider secret. Provider credentials and
-private proxy policy are not stored in this repository or image.
+`CAPTION_PROXY_ACCESS_ID` is an observable access identifier, not a provider secret. Provider credentials remain in the
+private Worker.
 
 ## License
 

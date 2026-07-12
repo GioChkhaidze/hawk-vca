@@ -6,7 +6,7 @@ Hawk VCA downloads each complete clip once, builds an adaptive chronological sto
 evidence, and sends bounded perception and style intents to a private model proxy. The public container contains no
 provider API keys.
 
-## V9.6 pipeline
+## V9.7 pipeline
 
 ```text
 complete video
@@ -18,7 +18,7 @@ complete video
                           -> four parallel evidence-led style captions
 ```
 
-V9.6 renders directly from the complete reconciled factual narrative. There is no intermediate compressed caption
+V9.7 renders directly from the complete reconciled factual narrative. There is no intermediate compressed caption
 basis and no fixed word or sentence target. Sustained actions remain concise, while genuinely changing sequences may
 retain their meaningful beginning, progression, and visible ending. The 300-word and eight-sentence limits are runaway
 safety ceilings rather than targets.
@@ -68,7 +68,7 @@ New-Item -ItemType Directory -Force -Path output
 docker run --rm --platform linux/amd64 `
   -v "${PWD}/submission_agent/examples:/input:ro" `
   -v "${PWD}/output:/output" `
-  ghcr.io/giochkhaidze/hawk-vca:v9.6
+  ghcr.io/giochkhaidze/hawk-vca:v9.7
 ```
 
 ## Build
@@ -77,7 +77,7 @@ docker run --rm --platform linux/amd64 `
 docker build --platform linux/amd64 `
   --build-arg CAPTION_PROXY_URL=https://your-proxy.example `
   --build-arg CAPTION_PROXY_ACCESS_ID=replace-with-your-access-id `
-  -t hawk-vca:v9.6 `
+  -t hawk-vca:v9.7 `
   submission_agent
 ```
 

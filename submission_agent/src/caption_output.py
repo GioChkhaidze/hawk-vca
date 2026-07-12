@@ -17,17 +17,24 @@ REFUSAL_PATTERNS = (
   re.compile(r"\bas an ai\b", re.IGNORECASE),
   re.compile(r"\bi cannot\b", re.IGNORECASE),
   re.compile(r"\bi can't\b", re.IGNORECASE),
-  re.compile(r"\bunable to\b", re.IGNORECASE),
+  re.compile(r"\bi (?:am )?unable to\b", re.IGNORECASE),
+  re.compile(r"\bunable to (?:comply|provide|complete|help|assist)\b", re.IGNORECASE),
 )
 
 REASONING_LEAK_PATTERNS = (
-  re.compile(r"\b(?:let me (?:analyze|reason|plan)|plan my caption|trusted narrative|chronology from|analysis of (?:the )?evidence)\b", re.IGNORECASE),
+  re.compile(
+    r"\b(?:the user (?:wants|asked|requests)|let me (?:analyze|reason|plan|think|draft|write|find|craft|compose)|"
+    r"plan my caption|key facts|hard exclusions|target style|trusted narrative|chronology from|"
+    r"analysis of (?:the )?evidence|i (?:should|need to|will) (?:write|draft|use|frame))\b",
+    re.IGNORECASE,
+  ),
   re.compile(r"(?:^|\n)\s*\d+[.)]\s+"),
+  re.compile(r"(?:^|\n)\s*[-*+]\s+"),
 )
 
 MARKDOWN_PATTERNS = (
   re.compile(r"^\s{0,3}#{1,6}\s+"),
-  re.compile(r"^\s*[-*+]\s+"),
+  re.compile(r"(?:^|\n)\s*[-*+]\s+"),
   re.compile(r"\*\*[^*]+\*\*"),
   re.compile(r"__[^_]+__"),
   re.compile(r"\[[^\]]+\]\([^)]+\)"),
@@ -40,7 +47,7 @@ JSON_FRAGMENT_PATTERNS = (
 )
 
 INCOMPLETE_ENDING_PATTERN = re.compile(
-  r"\b(?:who|which|that|because|although|while|when|after|before|until|unless|and|or|but|with|without|to|for|from|into|onto|like|than|so|just|as if|as though)\s*[.!?][\"']?$",
+  r"\b(?:who|which|that|because|although|while|when|until|unless|and|or|but|so|just|as if|as though)\s*[.!?][\"']?$",
   re.IGNORECASE,
 )
 

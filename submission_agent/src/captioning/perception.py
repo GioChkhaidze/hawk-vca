@@ -1,6 +1,7 @@
 import sys
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
@@ -151,23 +152,44 @@ def _request_storyboard(
   on_metadata: Callable[[ProxyMetadata], None] | None, clip_label: str,
 ) -> dict[str, Any]:
   try:
-    storyboard_started = time.perf_counter()
-    duration, frames = storyboard_extractor(video_path, frames_dir, config.storyboard_max_frames)
+    def prepare_storyboard() -> tuple[float, list[Any], float]:
+      started = time.perf_counter()
+      duration, frames = storyboard_extractor(video_path, frames_dir, config.storyboard_max_frames)
+      return duration, frames, time.perf_counter() - started
+
+    def prepare_speech() -> tuple[str | None, float]:
+      started = time.perf_counter()
+      transcript = _collect_transcript(config, video_path, budget, urlopen, on_metadata)
+      return transcript, time.perf_counter() - started
+
+    def prepare_native_video() -> tuple[Path | None, float]:
+      started = time.perf_counter()
+      path = _native_video_path(
+        video_path, frames_dir.parent / "native", budget, native_video_preparer,
+      )
+      return path, time.perf_counter() - started
+
+    # These operations read the same immutable download and produce independent
+    # artifacts. Running them together removes avoidable serial media latency
+    # while leaving clip-level and provider-level concurrency unchanged.
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="media_prepare") as pool:
+      storyboard_future = pool.submit(prepare_storyboard)
+      speech_future = pool.submit(prepare_speech)
+      native_future = pool.submit(prepare_native_video)
+      duration, frames, storyboard_seconds = storyboard_future.result()
+      speech_transcript, audio_seconds = speech_future.result()
+      native_video_path, native_seconds = native_future.result()
+
     _log_media_stage(
-      clip_label, "storyboard", storyboard_started, budget, frame_count=len(frames),
+      clip_label, "storyboard", None, budget, duration_seconds=storyboard_seconds,
+      frame_count=len(frames),
     )
-    audio_started = time.perf_counter()
-    speech_transcript = _collect_transcript(config, video_path, budget, urlopen, on_metadata)
     _log_media_stage(
-      clip_label, "speech_gate", audio_started, budget,
+      clip_label, "speech_gate", None, budget, duration_seconds=audio_seconds,
       transcript_used=str(bool(speech_transcript)).lower(),
     )
-    native_started = time.perf_counter()
-    native_video_path = _native_video_path(
-      video_path, frames_dir.parent / "native", budget, native_video_preparer,
-    )
     _log_media_stage(
-      clip_label, "native_video", native_started, budget,
+      clip_label, "native_video", None, budget, duration_seconds=native_seconds,
       native_bytes=native_video_path.stat().st_size if native_video_path else 0,
     )
     timeout = _bounded_timeout(budget, config.caption_proxy_timeout_seconds)
@@ -315,13 +337,18 @@ def _clip_label(video_url: str) -> str:
 
 
 def _log_media_stage(
-  clip_label: str, stage: str, started: float, budget: RuntimeBudget | None, **details: object,
+  clip_label: str, stage: str, started: float | None, budget: RuntimeBudget | None, **details: object,
 ) -> None:
   remaining = budget.remaining_seconds() if budget is not None else -1.0
+  measured_seconds = details.pop("duration_seconds", None)
+  duration_seconds = (
+    float(measured_seconds) if measured_seconds is not None
+    else time.perf_counter() - float(started)
+  )
   suffix = " ".join(f"{key}={value}" for key, value in details.items())
   print(
     f"MEDIA_STAGE clip={clip_label!r} stage={stage} "
-    f"duration_seconds={time.perf_counter() - started:.3f} "
+    f"duration_seconds={duration_seconds:.3f} "
     f"remaining_runtime_budget={remaining:.3f}" + (f" {suffix}" if suffix else ""),
     file=sys.stderr,
   )

@@ -11,8 +11,8 @@ class CaptionProxyError(Exception):
   pass
 
 
-EXPECTED_POLICY_VERSION = "style-spec-v9.6-evidence-led-primitives-20260712"
-EXPECTED_PIPELINE_VERSION = "v9.6-conservative-dual-vision-20260712"
+EXPECTED_POLICY_VERSION = "style-spec-v9.7-private-evidence-led-r5-20260712"
+EXPECTED_PIPELINE_VERSION = "v9.7-private-adaptive-evidence-20260712"
 MAX_TRANSCRIPT_CHARS = 6_000
 FACT_FIELDS = (
   "factual_summary", "do_not_claim", "duration_seconds", "scene_complexity", "media_type", "events",

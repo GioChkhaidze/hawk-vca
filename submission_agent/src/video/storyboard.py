@@ -11,8 +11,8 @@ from typing import Callable
 
 
 MIN_STORYBOARD_FRAMES = 1
-MAX_STORYBOARD_FRAMES = 24
-MAX_FRAME_BYTES = 512 * 1024
+MAX_STORYBOARD_FRAMES = 30
+MAX_FRAME_BYTES = 640 * 1024
 THUMBNAIL_BYTES = 16 * 16
 NEAR_DUPLICATE_BITS = 8
 BATCH_SAMPLE_FPS = 8
@@ -37,7 +37,7 @@ class StoryboardFrame:
 class _Candidate:
   timestamp: float
   kind: str
-  width: int = 640
+  width: int = 704
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -111,19 +111,23 @@ def _scene_change_times(video_path: Path, duration: float, runner: Runner) -> li
 
 def _desired_frame_count(duration: float, scene_count: int, maximum: int) -> int:
   if duration <= 10:
-    target = 12
+    target = 14
   elif duration <= 30:
-    target = 16
+    target = 18
   elif duration <= 60:
-    target = 20
-  elif duration <= 120:
     target = 22
+  elif duration <= 120:
+    target = 26
   else:
-    target = 24
+    target = 28
   if scene_count <= 1:
-    target = min(target, 12 if duration <= 30 else 16)
-  elif scene_count >= 8:
-    target = 24
+    target = min(target, 14 if duration <= 30 else 18)
+  elif scene_count <= 3:
+    target = min(target, 18 if duration <= 30 else 22 if duration <= 120 else 24)
+  elif scene_count >= 12:
+    target = 30
+  elif scene_count >= 6:
+    target += 2
   return min(maximum, max(MIN_STORYBOARD_FRAMES, target))
 
 
@@ -133,20 +137,23 @@ def _candidate_pool(duration: float, scene_times: list[float], desired: int) -> 
     _Candidate(duration * (index + 0.5) / uniform_count, "uniform")
     for index in range(uniform_count)
   ]
-  selected_scenes = _spread(scene_times, min(8, max(2, desired // 3)))
+  selected_scenes = _spread(scene_times, min(12, max(2, desired // 3)))
   candidates.extend(_Candidate(timestamp, "scene") for timestamp in selected_scenes)
 
-  burst_anchors = _spread(scene_times, 2) if scene_times else [duration / 3, duration * 2 / 3]
+  burst_anchor_count = 3 if desired >= 22 else 2
+  burst_anchors = _spread(scene_times, burst_anchor_count) if scene_times else [
+    duration * (index + 1) / (burst_anchor_count + 1) for index in range(burst_anchor_count)
+  ]
   burst_offset = min(0.35, max(0.12, duration / 240))
   for anchor in burst_anchors:
     for offset in (-burst_offset, burst_offset):
       candidates.append(_Candidate(min(duration - 0.02, max(0.02, anchor + offset)), "burst"))
 
-  key_count = 2 if duration <= 30 else 3 if duration <= 60 else 4
+  key_count = 3 if duration <= 30 else 4 if duration <= 60 else 5
   key_anchors = _spread(scene_times, key_count) if scene_times else [
     duration * (index + 1) / (key_count + 1) for index in range(key_count)
   ]
-  candidates.extend(_Candidate(timestamp, "key", 960) for timestamp in key_anchors)
+  candidates.extend(_Candidate(timestamp, "key", 1_024) for timestamp in key_anchors)
 
   preferred = {"uniform": 0, "burst": 1, "scene": 2, "key": 3}
   by_millisecond: dict[int, _Candidate] = {}
@@ -176,8 +183,8 @@ def _extract_candidates_batch(
   video_path: Path, destination_dir: Path, candidates: list[_Candidate], runner: Runner,
 ) -> list[tuple[StoryboardFrame, int]]:
   groups = [
-    ("normal", 640, [candidate for candidate in candidates if candidate.width < 960]),
-    ("key", 960, [candidate for candidate in candidates if candidate.width >= 960]),
+    ("normal", 704, [candidate for candidate in candidates if candidate.width < 1_024]),
+    ("key", 1_024, [candidate for candidate in candidates if candidate.width >= 1_024]),
   ]
   groups = [group for group in groups if group[2]]
   if not groups:
@@ -206,7 +213,7 @@ def _extract_candidates_batch(
     gray_path = destination_dir / f"batch_{label}.gray"
     paths[label] = image_pattern, gray_path
     output_arguments.extend([
-      "-map", f"[{label}_out]", "-vsync", "0", "-q:v", "6", "-start_number", "0",
+      "-map", f"[{label}_out]", "-vsync", "0", "-q:v", "5", "-start_number", "0",
       "-y", str(image_pattern),
       "-map", f"[{label}_gray]", "-vsync", "0", "-f", "rawvideo", "-y", str(gray_path),
     ])
@@ -315,7 +322,7 @@ def _extract_candidate(
   completed = _run(runner, [
     "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-ss",
     f"{candidate.timestamp:.3f}", "-i", str(video_path), "-filter_complex", filter_graph,
-    "-map", "[out]", "-frames:v", "1", "-q:v", "6", "-y", str(image_path),
+    "-map", "[out]", "-frames:v", "1", "-q:v", "5", "-y", str(image_path),
     "-map", "[gray]", "-frames:v", "1", "-f", "rawvideo", "-y", str(gray_path),
   ], timeout, allow_failure=True)
   if completed.returncode != 0 or not image_path.exists() or not gray_path.exists():
@@ -346,10 +353,55 @@ def _frame_from_files(
 def _choose_frames(frames: list[StoryboardFrame], desired: int) -> list[StoryboardFrame]:
   if len(frames) <= desired:
     return sorted(frames, key=lambda item: item.timestamp_seconds)
-  priority = {"key": 0, "scene": 1, "burst": 2, "uniform": 3}
-  ranked = sorted(frames, key=lambda item: (priority[item.kind], item.timestamp_seconds))
-  selected = ranked[:desired]
+
+  ordered = sorted(frames, key=lambda item: item.timestamp_seconds)
+  selected: list[StoryboardFrame] = []
+
+  def add(items: list[StoryboardFrame]) -> None:
+    selected_ids = {item.frame_id for item in selected}
+    for item in items:
+      if len(selected) >= desired:
+        return
+      if item.frame_id not in selected_ids:
+        selected.append(item)
+        selected_ids.add(item.frame_id)
+
+  # Preserve the actual temporal span before favoring visual salience. The old
+  # priority-only slice could spend the complete budget on scene/key frames and
+  # silently lose the beginning, ending, or a long interval between them.
+  add([ordered[0], ordered[-1]])
+  key_frames = [item for item in ordered if item.kind == "key"]
+  scene_frames = [item for item in ordered if item.kind == "scene"]
+  burst_frames = [item for item in ordered if item.kind == "burst"]
+  add(_spread_frames(key_frames, min(len(key_frames), max(2, desired // 6))))
+  add(_spread_frames(scene_frames, min(len(scene_frames), max(2, desired // 3))))
+  add(_spread_frames(burst_frames, min(len(burst_frames), max(2, desired // 6))))
+
+  # Fill the rest by repeatedly choosing the timestamp farthest from existing
+  # selections. This retains uniform coverage without discarding useful scene,
+  # burst, or high-resolution candidates.
+  remaining = [item for item in ordered if item not in selected]
+  while remaining and len(selected) < desired:
+    choice = max(
+      remaining,
+      key=lambda item: min(
+        abs(item.timestamp_seconds - existing.timestamp_seconds) for existing in selected
+      ),
+    )
+    selected.append(choice)
+    remaining.remove(choice)
   return sorted(selected, key=lambda item: item.timestamp_seconds)
+
+
+def _spread_frames(values: list[StoryboardFrame], limit: int) -> list[StoryboardFrame]:
+  if len(values) <= limit:
+    return values
+  if limit <= 0:
+    return []
+  if limit == 1:
+    return [values[len(values) // 2]]
+  indexes = {round(index * (len(values) - 1) / (limit - 1)) for index in range(limit)}
+  return [values[index] for index in sorted(indexes)]
 
 
 def _spread(values: list[float], limit: int) -> list[float]:

@@ -4,10 +4,9 @@ import sys
 from typing import Any, Callable
 
 from config import AppConfig
-from fallbacks import fallback_caption
+from caption_output import fallback_caption, validate_caption
 from proxy_client import CaptionProxyError, ProxyMetadata, proxy_configured, style_caption_via_proxy
 from runtime_budget import RuntimeBudget
-from validators import validate_caption
 
 
 MAX_STYLE_WORKERS = 4

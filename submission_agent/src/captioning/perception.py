@@ -1,4 +1,6 @@
 import sys
+import time
+import urllib.parse
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
@@ -24,11 +26,14 @@ GENERIC_FACTS = {
 DOWNLOAD_TIMEOUT_SECONDS = 40
 MAX_VIDEO_BYTES = 160 * 1024 * 1024
 MAX_BASE64_VIDEO_BYTES = 48 * 1024 * 1024
-# Leaves room for 24 storyboard images after base64 expansion inside the Worker's 72 MiB request cap.
-MAX_NATIVE_ANALYSIS_VIDEO_BYTES = 38 * 1024 * 1024
+# Keeps the complete request comfortably below the Worker's 72 MiB cap after base64 and JSON expansion.
+MAX_NATIVE_ANALYSIS_VIDEO_BYTES = 24 * 1024 * 1024
 AUDIO_PROCESSING_TIMEOUT_SECONDS = 25
 OPTIONAL_AUDIO_RESERVE_SECONDS = 90
 ANALYSIS_VIDEO_TIMEOUT_SECONDS = 35
+FULL_ENSEMBLE_MIN_REMAINING_SECONDS = 150
+POST_DOWNLOAD_MIN_REMAINING_SECONDS = 125
+NATIVE_VIDEO_MIN_REMAINING_SECONDS = 90
 
 
 def perceive_video(
@@ -66,6 +71,17 @@ def _perceive_storyboard_first(
   storyboard_extractor: Any, native_video_preparer: Any,
   on_metadata: Callable[[ProxyMetadata], None] | None,
 ) -> dict[str, Any]:
+  clip_label = _clip_label(video_url)
+  if budget is not None and budget.remaining_seconds() < FULL_ENSEMBLE_MIN_REMAINING_SECONDS:
+    print(
+      f"PERCEPTION_FAST_PATH clip={clip_label!r} reason=remaining_budget_before_download "
+      f"remaining_seconds={budget.remaining_seconds():.3f}",
+      file=sys.stderr,
+    )
+    return _request_facts(
+      config, video_url=video_url, budget=budget, urlopen=urlopen, source="deadline_url",
+      on_metadata=on_metadata,
+    )
   download_timeout = _bounded_timeout(budget, DOWNLOAD_TIMEOUT_SECONDS)
   if download_timeout is None:
     print("RUN_DEADLINE_REACHED stage=storyboard_download", file=sys.stderr)
@@ -73,10 +89,24 @@ def _perceive_storyboard_first(
   try:
     with TemporaryDirectory(prefix="submission_agent_storyboard_") as temp_dir:
       root = Path(temp_dir)
+      download_started = time.perf_counter()
       path = downloader(video_url, root, download_timeout, MAX_VIDEO_BYTES)
+      _log_media_stage(
+        clip_label, "download", download_started, budget, bytes_written=path.stat().st_size,
+      )
+      if budget is not None and budget.remaining_seconds() < POST_DOWNLOAD_MIN_REMAINING_SECONDS:
+        print(
+          f"PERCEPTION_FAST_PATH clip={clip_label!r} reason=remaining_budget_after_download "
+          f"remaining_seconds={budget.remaining_seconds():.3f}",
+          file=sys.stderr,
+        )
+        return _request_facts(
+          config, video_url=video_url, budget=budget, urlopen=urlopen, source="deadline_url",
+          on_metadata=on_metadata,
+        )
       facts = _request_storyboard(
         config, path, root / "frames", budget, urlopen, storyboard_extractor,
-        native_video_preparer, on_metadata,
+        native_video_preparer, on_metadata, clip_label,
       )
       if facts != fallback_facts():
         return facts
@@ -118,29 +148,51 @@ def _log_generic_selection(reason: str, budget: RuntimeBudget | None) -> None:
 def _request_storyboard(
   config: AppConfig, video_path: Path, frames_dir: Path, budget: RuntimeBudget | None, urlopen: Any,
   storyboard_extractor: Any, native_video_preparer: Any,
-  on_metadata: Callable[[ProxyMetadata], None] | None,
+  on_metadata: Callable[[ProxyMetadata], None] | None, clip_label: str,
 ) -> dict[str, Any]:
   try:
+    storyboard_started = time.perf_counter()
     duration, frames = storyboard_extractor(video_path, frames_dir, config.storyboard_max_frames)
+    _log_media_stage(
+      clip_label, "storyboard", storyboard_started, budget, frame_count=len(frames),
+    )
+    audio_started = time.perf_counter()
     speech_transcript = _collect_transcript(config, video_path, budget, urlopen, on_metadata)
+    _log_media_stage(
+      clip_label, "speech_gate", audio_started, budget,
+      transcript_used=str(bool(speech_transcript)).lower(),
+    )
+    native_started = time.perf_counter()
     native_video_path = _native_video_path(
       video_path, frames_dir.parent / "native", budget, native_video_preparer,
+    )
+    _log_media_stage(
+      clip_label, "native_video", native_started, budget,
+      native_bytes=native_video_path.stat().st_size if native_video_path else 0,
     )
     timeout = _bounded_timeout(budget, config.caption_proxy_timeout_seconds)
     if timeout is None:
       print("RUN_DEADLINE_REACHED stage=storyboard_perception", file=sys.stderr)
       return fallback_facts()
+    encode_started = time.perf_counter()
+    native_video_data = video_data_url(native_video_path) if native_video_path else None
+    _log_media_stage(
+      clip_label, "request_encoding", encode_started, budget,
+      encoded_video_chars=len(native_video_data) if native_video_data else 0,
+    )
     kwargs = {
       "config": config,
       "duration_seconds": duration,
       "frames": [{"id": frame.frame_id, "data_url": frame.data_url} for frame in frames],
       "speech_transcript": speech_transcript,
-      "video_data_url": video_data_url(native_video_path) if native_video_path else None,
+      "video_data_url": native_video_data,
       "timeout_seconds": timeout,
     }
     if urlopen is not None:
       kwargs["urlopen"] = urlopen
+    proxy_started = time.perf_counter()
     result = perceive_storyboard_via_proxy(**kwargs)
+    _log_media_stage(clip_label, "perception_proxy", proxy_started, budget)
     if on_metadata:
       on_metadata(result.metadata)
     print(
@@ -164,6 +216,13 @@ def _request_storyboard(
 def _native_video_path(
   video_path: Path, destination_dir: Path, budget: RuntimeBudget | None, native_video_preparer: Any,
 ) -> Path | None:
+  if budget is not None and budget.remaining_seconds() < NATIVE_VIDEO_MIN_REMAINING_SECONDS:
+    print(
+      f"NATIVE_VIDEO_SOURCE kind=omitted reason=deadline "
+      f"remaining_seconds={budget.remaining_seconds():.3f}",
+      file=sys.stderr,
+    )
+    return None
   source_size = video_path.stat().st_size
   if source_size <= MAX_NATIVE_ANALYSIS_VIDEO_BYTES:
     print(f"NATIVE_VIDEO_SOURCE kind=original bytes={source_size}", file=sys.stderr)
@@ -193,6 +252,15 @@ def _collect_transcript(
   config: AppConfig, video_path: Path, budget: RuntimeBudget | None, urlopen: Any,
   on_metadata: Callable[[ProxyMetadata], None] | None,
 ) -> str | None:
+  if budget is not None and budget.remaining_seconds() < (
+    OPTIONAL_AUDIO_RESERVE_SECONDS + AUDIO_PROCESSING_TIMEOUT_SECONDS
+  ):
+    print(
+      f"SPEECH_GATE activated=false reason=deadline remaining_seconds="
+      f"{budget.remaining_seconds():.3f}",
+      file=sys.stderr,
+    )
+    return None
   processing_timeout = _bounded_timeout(
     budget, AUDIO_PROCESSING_TIMEOUT_SECONDS, reserve_seconds=OPTIONAL_AUDIO_RESERVE_SECONDS,
   )
@@ -239,6 +307,24 @@ def _collect_transcript(
   except (CaptionProxyError, OSError) as exc:
     print(f"SPEECH_TRANSCRIPTION_FAILED error={str(exc)[:240]!r}", file=sys.stderr)
     return None
+
+
+def _clip_label(video_url: str) -> str:
+  parsed = urllib.parse.urlparse(video_url)
+  return Path(urllib.parse.unquote(parsed.path)).name[:96] or parsed.netloc[:96] or "video"
+
+
+def _log_media_stage(
+  clip_label: str, stage: str, started: float, budget: RuntimeBudget | None, **details: object,
+) -> None:
+  remaining = budget.remaining_seconds() if budget is not None else -1.0
+  suffix = " ".join(f"{key}={value}" for key, value in details.items())
+  print(
+    f"MEDIA_STAGE clip={clip_label!r} stage={stage} "
+    f"duration_seconds={time.perf_counter() - started:.3f} "
+    f"remaining_runtime_budget={remaining:.3f}" + (f" {suffix}" if suffix else ""),
+    file=sys.stderr,
+  )
 
 
 def _downloaded_video_fallback(

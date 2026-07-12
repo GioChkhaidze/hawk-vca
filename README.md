@@ -6,7 +6,7 @@ Hawk VCA downloads each complete clip once, builds a chronological scene-aware s
 speech evidence, and sends bounded perception and style intents to a private model proxy. The container contains no
 provider API keys.
 
-## V9.5.3 pipeline
+## V9.5.4 pipeline
 
 ```text
 complete video download
@@ -18,9 +18,14 @@ complete video download
                               -> four parallel GLM-5.2 style captions
 ```
 
-V9.5.3 defaults to one complete sentence and uses a second only when a meaningful transition needs it. Captions are
+V9.5.4 retains the V9.5.3 caption policy: one complete sentence by default and a second only when a meaningful
+transition needs it. Captions are
 bounded to 40 words. All four styles preserve one reconciled semantic proposition while integrating formal, sarcastic,
 humorous technical, or humorous non-technical wording into the description itself.
+
+The V9.5.4 runtime refactor adds adaptive storyboard preprocessing, earlier deadline-aware degradation, progressive
+atomic result journaling, and one centralized caption-validity boundary. These changes reduce avoidable preprocessing
+and finalization work without changing the requested caption semantics or public input/output contract.
 
 Low-motion clips retain their available storyboard evidence instead of unnecessarily abandoning the ensemble. Exact
 identity, score, event, location, object, and outcome claims are conservatively generalized when the visual reports
@@ -63,7 +68,7 @@ New-Item -ItemType Directory -Force -Path output
 docker run --rm --platform linux/amd64 `
   -v "${PWD}/submission_agent/examples:/input:ro" `
   -v "${PWD}/output:/output" `
-  ghcr.io/giochkhaidze/hawk-vca:v9.5.3
+  ghcr.io/giochkhaidze/hawk-vca:v9.5.4
 ```
 
 ## Build
@@ -72,7 +77,7 @@ docker run --rm --platform linux/amd64 `
 docker build --platform linux/amd64 `
   --build-arg CAPTION_PROXY_URL=https://your-proxy.example `
   --build-arg CAPTION_PROXY_ACCESS_ID=replace-with-your-access-id `
-  -t hawk-vca:v9.5.3 `
+  -t hawk-vca:v9.5.4 `
   submission_agent
 ```
 

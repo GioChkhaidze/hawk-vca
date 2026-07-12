@@ -1,6 +1,7 @@
 import base64
 import mimetypes
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -9,6 +10,7 @@ from pathlib import Path
 
 DEFAULT_VIDEO_EXTENSION = ".video"
 CHUNK_SIZE = 1024 * 1024
+MAX_SOCKET_WAIT_SECONDS = 10
 VIDEO_EXTENSIONS = {
   ".avi",
   ".m4v",
@@ -26,6 +28,10 @@ class DownloadError(Exception):
 
 
 def download_video(video_url: str, destination_dir: Path, timeout_seconds: float, max_bytes: int) -> Path:
+  if timeout_seconds <= 0:
+    raise DownloadError("video download timeout must be positive")
+  if max_bytes <= 0:
+    raise DownloadError("video download byte limit must be positive")
   parsed_url = urllib.parse.urlparse(video_url)
   if parsed_url.scheme not in {"http", "https"}:
     raise DownloadError("video_url must use HTTP or HTTPS")
@@ -36,8 +42,11 @@ def download_video(video_url: str, destination_dir: Path, timeout_seconds: float
   temp_path = destination_dir / f".video{extension}.tmp"
 
   try:
+    deadline = time.monotonic() + timeout_seconds
     request = urllib.request.Request(video_url, headers={"User-Agent": "submission_agent/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with urllib.request.urlopen(
+      request, timeout=min(timeout_seconds, MAX_SOCKET_WAIT_SECONDS),
+    ) as response:
       status = getattr(response, "status", 200)
       if status >= 400:
         raise DownloadError(f"video download failed with HTTP {status}")
@@ -49,6 +58,8 @@ def download_video(video_url: str, destination_dir: Path, timeout_seconds: float
       total_bytes = 0
       with temp_path.open("wb") as output_file:
         while True:
+          if time.monotonic() >= deadline:
+            raise DownloadError("video download timed out")
           chunk = response.read(CHUNK_SIZE)
           if not chunk:
             break

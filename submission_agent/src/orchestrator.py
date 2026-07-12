@@ -8,10 +8,9 @@ from typing import Any, Callable
 from captioning.perception import fallback_facts, perceive_video
 from captioning.styles import render_style_captions
 from config import AppConfig
-from fallbacks import fallback_caption
+from caption_output import fallback_caption, validate_caption
 from proxy_client import ProxyMetadata
 from runtime_budget import RuntimeBudget
-from validators import validate_caption
 
 
 CaptionCallback = Callable[[int, str, str], None]
